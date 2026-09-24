@@ -18,7 +18,7 @@ def init_db():
     conn = get_db()
 
     conn.execute("""
-CREATE TABLE IF NOT EXISTS lost_items lost_items (
+CREATE TABLE IF NOT EXISTS lost_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             item TEXT NOT NULL,
@@ -529,7 +529,7 @@ def dashboard():
     item_type=item_type
     )
 # ---------------- START DATABASE + APP ----------------
-
+init_db()
 if __name__ == "__main__":
     init_db()
     app.run(debug=True)
