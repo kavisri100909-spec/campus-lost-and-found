@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Campus Lost & Found</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #eef3f9;
+            color: #1e293b;
+        }
+
+        .app {
+            width: 100%;
+            max-width: 430px;
+            min-height: 100vh;
+            margin: auto;
+            background: #f8fafc;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: white;
+            padding: 35px 22px 30px;
+            border-radius: 0 0 30px 30px;
+        }
+
+        .logo {
+            font-size: 38px;
+            margin-bottom: 10px;
+        }
+
+        .header h1 {
+            font-size: 27px;
+            line-height: 1.2;
+        }
+
+        .header p {
+            margin-top: 8px;
+            font-size: 15px;
+            opacity: 0.9;
+        }
+
+        /* Content */
+        .content {
+            padding: 20px 16px 90px;
+        }
+
+        .welcome {
+            font-size: 23px;
+            margin-bottom: 18px;
+        }
+
+        /* Cards */
+        .card {
+            background: white;
+            padding: 20px;
+            margin-bottom: 16px;
+            border-radius: 20px;
+            box-shadow: 0 5px 18px rgba(0,0,0,0.08);
+        }
+
+        .card h2 {
+            font-size: 20px;
+            margin-bottom: 10px;
+        }
+
+        .card p {
+            color: #64748b;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /* Buttons */
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            margin-top: 16px;
+            border: none;
+            border-radius: 13px;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .lost {
+            background: #ef4444;
+            color: white;
+        }
+
+        .found {
+            background: #22c55e;
+            color: white;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        /* Search */
+        .search-box {
+            display: flex;
+            gap: 8px;
+            margin-top: 15px;
+        }
+
+        .search-box input {
+            width: 100%;
+            min-width: 0;
+            padding: 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .search-box input:focus {
+            border-color: #2563eb;
+        }
+
+        .search-btn {
+            padding: 0 17px;
+            border: none;
+            border-radius: 12px;
+            background: #2563eb;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        /* Bottom bar */
+        .bottom {
+            position: fixed;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100%;
+            max-width: 430px;
+            background: white;
+            border-top: 1px solid #e2e8f0;
+            padding: 14px;
+            text-align: center;
+            color: #64748b;
+            font-size: 13px;
+        }
+
+        /* Phone screen */
+        @media (max-width: 430px) {
+            body {
+                background: #f8fafc;
+            }
+
+            .app {
+                max-width: 100%;
+            }
+
+            .header h1 {
+                font-size: 25px;
+            }
+        }
+
+        /* Laptop preview */
+        @media (min-width: 700px) {
+            body {
+                padding: 25px 0;
+            }
+
+            .app {
+                border-radius: 25px;
+                overflow: hidden;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="app">
+
+    <!-- Header -->
+    <div class="header">
+        <div class="logo">🎒</div>
+
+        <h1>Campus Lost & Found</h1>
+
+        <p>Lost it? Report it. Found it? Return it.</p>
+    </div>
+
+
+    <!-- Main Content -->
+    <div class="content">
+
+        <h2 class="welcome">Welcome 👋</h2>
+
+
+        <!-- Lost Item -->
+        <div class="card">
+
+            <h2>🔍 Lost Something?</h2>
+
+            <p>
+                Report your lost item and get notified
+                when someone finds it.
+            </p>
+
+            <a href="/report-lost" class="btn lost">
+                🔴 Report Lost Item
+            </a>
+            <a href="/dashboard">
+                📊 Dashboard
+            </a>
+
+        </div>
+
+
+        <!-- Found Item -->
+        <div class="card">
+
+            <h2>🟢 Found Something?</h2>
+
+            <p>
+                Found an item on campus?
+                Help return it to its owner.
+            </p>
+
+            <a href="/report-found" class="btn found">
+                🟢 Report Found Item
+            </a>
+
+        </div>
+
+
+        <!-- Search -->
+        <div class="card">
+    <h2>🔔 Check Notifications</h2>
+
+    <p>
+        Enter your name to check whether your lost item has been found.
+    </p>
+
+    <div class="search-box">
+
+    <input
+        type="text"
+        id="name"
+        placeholder="Enter your name"
+        oninput="showNotification(this.value)"
+    >
+
+</div>
+
+<script>
+let timer;
+
+function showNotification(name) {
+
+    clearTimeout(timer);
+
+    if (name.trim() === "") {
+        return;
+    }
+
+    timer = setTimeout(function() {
+        window.location.href =
+        "/notifications?name=" + encodeURIComponent(name.trim());
+    }, 1000);
+}
+</script>
+</div>
+    <!-- Bottom Navigation -->
+    <div class="bottom">
+        🏫 Campus Lost & Found
+    </div>
+
+</div>
+
+</body>
+</html>
