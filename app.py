@@ -121,28 +121,89 @@ def report_lost():
 
         conn = get_db()
 
+        # Save lost item
         db_execute(
             conn,
             "INSERT INTO lost_items (name, item, location, contact) VALUES (?, ?, ?, ?)",
             (name, item, location, contact)
         )
 
+        # Check already reported found items
+        found_items = db_execute(
+            conn,
+            "SELECT * FROM found_items WHERE LOWER(item) = LOWER(?)",
+            (item,)
+        ).fetchall()
+
+        matched = False
+
+        for found in found_items:
+
+            # Avoid duplicate notification
+            existing = db_execute(
+                conn,
+                """
+                SELECT id FROM notifications
+                WHERE name = ?
+                AND message LIKE ?
+                """,
+                (
+                    name,
+                    f"%Your lost item '{item}' has been found!%"
+                )
+            ).fetchone()
+
+            if not existing:
+                message = (
+                    f"🔔 Your lost item '{item}' has been found! "
+                    f"Found at {found['location']}. "
+                    f"Found by {found['finder']}. "
+                    f"📞 Contact: {found['contact']}"
+                )
+
+                db_execute(
+                    conn,
+                    "INSERT INTO notifications (name, message) VALUES (?, ?)",
+                    (name, message)
+                )
+
+            matched = True
+
         conn.commit()
         conn.close()
 
+        if matched:
+            return render_template_string("""
+            <h1>🎉 Match Found!</h1>
+
+            <p>Your lost item matches an item that was already reported as found.</p>
+
+            <p>🔔 A notification has been sent to <b>{{ name }}</b>.</p>
+
+            <p>📱 Check your notifications to see the finder's contact number.</p>
+
+            <br>
+            <a href="/">← Back to Home</a>
+            """, name=name)
+
         return render_template_string("""
         <h1>✅ Lost Item Reported!</h1>
+
         <p><b>Name:</b> {{ name }}</p>
         <p><b>Item:</b> {{ item }}</p>
-        <p><b>Location:</b> {{ location }}</p>
         <p>💾 Your report has been saved.</p>
+
+        <p>We will notify you automatically if a matching found item is reported.</p>
+
+        <br>
         <a href="/">← Back to Home</a>
-        """, name=name, item=item, location=location)
+        """, name=name, item=item)
 
     return render_template_string("""
     <h1>🔴 Report Lost Item</h1>
 
     <form method="POST">
+
         <label>Your Name:</label><br>
         <input type="text" name="name" required>
         <br><br>
@@ -160,12 +221,12 @@ def report_lost():
         <br><br>
 
         <button type="submit">Submit Report</button>
+
     </form>
 
     <br>
     <a href="/">← Back to Home</a>
     """)
-
 
 # ---------------- REPORT FOUND ----------------
 
