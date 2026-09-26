@@ -1,47 +1,102 @@
 from flask import Flask, request, render_template, render_template_string
+import os
 import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
-DATABASE = "campus.db"
+# Render will provide DATABASE_URL through the environment.
+# When running locally without DATABASE_URL, SQLite is used automatically.
+DATABASE_URL = os.getenv("DATABASE_URL")
+SQLITE_DATABASE = "campus.db"
 
 
 # ---------------- DATABASE ----------------
 
 def get_db():
-    conn = sqlite3.connect(DATABASE)
+    if DATABASE_URL:
+        return psycopg2.connect(
+            DATABASE_URL,
+            cursor_factory=RealDictCursor
+        )
+
+    conn = sqlite3.connect(SQLITE_DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def db_execute(conn, query, params=()):
+    """Run the same query against SQLite or PostgreSQL."""
+    if DATABASE_URL:
+        # SQLite uses ?, PostgreSQL uses %s.
+        query = query.replace("?", "%s")
+        cur = conn.cursor()
+        cur.execute(query, params)
+        return cur
+
+    return conn.execute(query, params)
 
 
 def init_db():
     conn = get_db()
 
-    conn.execute("""
-CREATE TABLE IF NOT EXISTS lost_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            item TEXT NOT NULL,
-            location TEXT NOT NULL
-        )
-    """)
+    if DATABASE_URL:
+        conn.cursor().execute("""
+            CREATE TABLE IF NOT EXISTS lost_items (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                item TEXT NOT NULL,
+                location TEXT NOT NULL,
+                contact TEXT NOT NULL
+            )
+        """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS found_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            finder TEXT NOT NULL,
-            item TEXT NOT NULL,
-            location TEXT NOT NULL
-        )
-    """)
+        conn.cursor().execute("""
+            CREATE TABLE IF NOT EXISTS found_items (
+                id SERIAL PRIMARY KEY,
+                finder TEXT NOT NULL,
+                item TEXT NOT NULL,
+                location TEXT NOT NULL,
+                contact TEXT NOT NULL
+            )
+        """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            message TEXT NOT NULL
-        )
-    """)
+        conn.cursor().execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                message TEXT NOT NULL
+            )
+        """)
+    else:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS lost_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                item TEXT NOT NULL,
+                location TEXT NOT NULL,
+                contact TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS found_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finder TEXT NOT NULL,
+                item TEXT NOT NULL,
+                location TEXT NOT NULL,
+                contact TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                message TEXT NOT NULL
+            )
+        """)
 
     conn.commit()
     conn.close()
@@ -58,18 +113,18 @@ def home():
 
 @app.route("/report-lost", methods=["GET", "POST"])
 def report_lost():
-
     if request.method == "POST":
-
         name = request.form["name"].strip()
         item = request.form["item"].strip().lower()
         location = request.form["location"].strip()
+        contact = request.form["contact"].strip()
 
         conn = get_db()
 
-        conn.execute(
-            "INSERT INTO lost_items (name, item, location) VALUES (?, ?, ?)",
-            (name, item, location)
+        db_execute(
+            conn,
+            "INSERT INTO lost_items (name, item, location, contact) VALUES (?, ?, ?, ?)",
+            (name, item, location, contact)
         )
 
         conn.commit()
@@ -77,24 +132,17 @@ def report_lost():
 
         return render_template_string("""
         <h1>✅ Lost Item Reported!</h1>
-
         <p><b>Name:</b> {{ name }}</p>
         <p><b>Item:</b> {{ item }}</p>
         <p><b>Location:</b> {{ location }}</p>
-
         <p>💾 Your report has been saved.</p>
-
         <a href="/">← Back to Home</a>
-        """,
-        name=name,
-        item=item,
-        location=location)
+        """, name=name, item=item, location=location)
 
     return render_template_string("""
     <h1>🔴 Report Lost Item</h1>
 
     <form method="POST">
-
         <label>Your Name:</label><br>
         <input type="text" name="name" required>
         <br><br>
@@ -107,8 +155,11 @@ def report_lost():
         <input type="text" name="location" required>
         <br><br>
 
-        <button type="submit">Submit Report</button>
+        <label>Contact Number:</label><br>
+        <input type="tel" name="contact" required>
+        <br><br>
 
+        <button type="submit">Submit Report</button>
     </form>
 
     <br>
@@ -120,41 +171,63 @@ def report_lost():
 
 @app.route("/report-found", methods=["GET", "POST"])
 def report_found():
-
     if request.method == "POST":
-
         finder = request.form["finder"].strip()
-        item = request.form["item"].strip().lower()
+        item = request.form["item"].strip()
         location = request.form["location"].strip()
+        contact = request.form["contact"].strip()
 
         conn = get_db()
 
         # Save found item
-        conn.execute(
-            "INSERT INTO found_items (finder, item, location) VALUES (?, ?, ?)",
-            (finder, item, location)
+        db_execute(
+            conn,
+            """
+            INSERT INTO found_items (finder, item, location, contact)
+            VALUES (?, ?, ?, ?)
+            """,
+            (finder, item, location, contact)
         )
 
-        # Find matching lost items
-        lost_items = conn.execute(
-            "SELECT * FROM lost_items WHERE item = ?",
+        # Find matching lost reports
+        lost_items = db_execute(
+            conn,
+            "SELECT * FROM lost_items WHERE LOWER(item) = LOWER(?)",
             (item,)
         ).fetchall()
 
         matched_names = []
 
+        # Create one notification per matching lost report.
         for lost in lost_items:
+            existing = db_execute(
+                conn,
+                """
+                SELECT id
+                FROM notifications
+                WHERE name = ?
+                AND message LIKE ?
+                LIMIT 1
+                """,
+                (
+                    lost["name"],
+                    f"%Your lost item '{item}' has been found!%"
+                )
+            ).fetchone()
 
-            message = (
-                f"🔔 Your lost item '{item}' has been found! "
-                f"Found at {location}. "
-                f"Found by {finder}."
-            )
+            if not existing:
+                message = (
+                    f"🔔 Your lost item '{item}' has been found! "
+                    f"Found at {location}. "
+                    f"Found by {finder}. "
+                    f"📞 Contact: {contact}"
+                )
 
-            conn.execute(
-                "INSERT INTO notifications (name, message) VALUES (?, ?)",
-                (lost["name"], message)
-            )
+                db_execute(
+                    conn,
+                    "INSERT INTO notifications (name, message) VALUES (?, ?)",
+                    (lost["name"], message)
+                )
 
             matched_names.append(lost["name"])
 
@@ -162,41 +235,40 @@ def report_found():
         conn.close()
 
         if matched_names:
+            names = ", ".join(dict.fromkeys(matched_names))
 
-            names = ", ".join(matched_names)
-
+            # Do NOT show the finder's phone number to the finder.
+            # The contact number is available to the matched lost reporter
+            # through their notification.
             return render_template_string("""
             <h1>🎉 Match Found!</h1>
 
             <p>The found item matches a lost-item report.</p>
 
             <h3>🔔 Notification sent to:</h3>
-
             <p>✅ {{ names }}</p>
 
-            <br>
-            <a href="/">← Back to Home</a>
-            """,
-            names=names)
-
-        else:
-
-            return render_template_string("""
-            <h1>ℹ️ No Match Found</h1>
-
-            <p>The found item has been saved.</p>
-
-            <p>We will keep it in the system for future matching.</p>
+            <p>📱 The matched user can see your contact number in their notification.</p>
 
             <br>
             <a href="/">← Back to Home</a>
-            """)
+            """, names=names)
 
+        return render_template_string("""
+        <h1>ℹ️ No Match Found</h1>
+
+        <p>The found item has been saved.</p>
+        <p>We will keep it in the system for future matching.</p>
+
+        <br>
+        <a href="/">← Back to Home</a>
+        """)
+
+    # GET request
     return render_template_string("""
     <h1>🟢 Report Found Item</h1>
 
     <form method="POST">
-
         <label>Your Name:</label><br>
         <input type="text" name="finder" required>
         <br><br>
@@ -209,8 +281,11 @@ def report_found():
         <input type="text" name="location" required>
         <br><br>
 
-        <button type="submit">Submit Found Item</button>
+        <label>Contact Number:</label><br>
+        <input type="tel" name="contact" required>
+        <br><br>
 
+        <button type="submit">Submit Found Item</button>
     </form>
 
     <br>
@@ -222,13 +297,13 @@ def report_found():
 
 @app.route("/notifications")
 def show_notifications():
-
     name = request.args.get("name", "").strip()
 
     conn = get_db()
 
-    messages = conn.execute(
-        "SELECT message FROM notifications WHERE name = ?",
+    messages = db_execute(
+        conn,
+        "SELECT message FROM notifications WHERE name = ? ORDER BY id DESC",
         (name,)
     ).fetchall()
 
@@ -238,49 +313,41 @@ def show_notifications():
     <h1>🔔 Your Notifications</h1>
 
     {% if messages %}
-
         {% for message in messages %}
             <p>🟢 {{ message["message"] }}</p>
         {% endfor %}
-
     {% else %}
-
         <p>No notifications found for <b>{{ name }}</b>.</p>
-
     {% endif %}
 
     <br>
     <a href="/">← Back to Home</a>
-    """,
-    messages=messages)
+    """, messages=messages)
 
-# ---------------- DASHBOARD ----------------
 
 # ---------------- DASHBOARD ----------------
 
 @app.route("/dashboard")
 def dashboard():
-
     search = request.args.get("search", "").strip().lower()
     item_type = request.args.get("type", "all")
     location = request.args.get("location", "").strip().lower()
 
     conn = get_db()
 
-    # Get lost items
-    lost_items = conn.execute(
+    lost_items = db_execute(
+        conn,
         "SELECT * FROM lost_items ORDER BY id DESC"
     ).fetchall()
 
-    # Get found items
-    found_items = conn.execute(
+    found_items = db_execute(
+        conn,
         "SELECT * FROM found_items ORDER BY id DESC"
     ).fetchall()
 
     conn.close()
 
-    # ---------------- SEARCH + FILTER ----------------
-
+    # Search
     if search:
         lost_items = [
             x for x in lost_items
@@ -296,6 +363,7 @@ def dashboard():
             or search in x["location"].lower()
         ]
 
+    # Location filter
     if location:
         lost_items = [
             x for x in lost_items
@@ -307,24 +375,21 @@ def dashboard():
             if location in x["location"].lower()
         ]
 
+    # Type filter
     if item_type == "lost":
         found_items = []
-
     elif item_type == "found":
         lost_items = []
 
     return render_template_string("""
     <!DOCTYPE html>
     <html>
-
     <head>
-
         <title>Campus Lost & Found Dashboard</title>
 
         <style>
-
             body {
-                font-family: Arial;
+                font-family: Arial, sans-serif;
                 background: #eef6ff;
                 padding: 30px;
             }
@@ -364,6 +429,7 @@ def dashboard():
                 gap: 20px;
                 justify-content: center;
                 margin: 25px;
+                flex-wrap: wrap;
             }
 
             .box {
@@ -396,20 +462,26 @@ def dashboard():
                 text-decoration: none;
                 color: #1769aa;
             }
-
         </style>
-
     </head>
 
     <body>
-
         <h1>📊 Campus Lost & Found Dashboard</h1>
 
+        <div class="stats">
+            <div class="box">
+                <h3>🔴 Lost</h3>
+                <p>{{ lost_items|length }}</p>
+            </div>
+
+            <div class="box">
+                <h3>🟢 Found</h3>
+                <p>{{ found_items|length }}</p>
+            </div>
+        </div>
 
         <!-- SEARCH + FILTER -->
-
         <div class="search-box">
-
             <form method="GET" action="/dashboard">
 
                 <input
@@ -427,7 +499,6 @@ def dashboard():
                 >
 
                 <select name="type">
-
                     <option value="all"
                         {% if item_type == "all" %}selected{% endif %}>
                         All Items
@@ -442,84 +513,52 @@ def dashboard():
                         {% if item_type == "found" %}selected{% endif %}>
                         🟢 Found Items
                     </option>
-
                 </select>
 
-                <button type="submit">
-                    🔍 Search
-                </button>
-
+                <button type="submit">🔍 Search</button>
             </form>
-
         </div>
 
-
         <!-- LOST ITEMS -->
-
         <div class="items lost">
-
             <h2>🔴 Lost Items ({{ lost_items|length }})</h2>
 
             {% if lost_items %}
-
                 {% for item in lost_items %}
-
                     <p>
                         <b>{{ item["item"] }}</b><br>
                         👤 {{ item["name"] }}<br>
                         📍 {{ item["location"] }}
                     </p>
-
                     <hr>
-
                 {% endfor %}
-
             {% else %}
-
                 <p>No lost items found.</p>
-
             {% endif %}
-
         </div>
 
-
         <!-- FOUND ITEMS -->
-
         <div class="items found">
-
             <h2>🟢 Found Items ({{ found_items|length }})</h2>
 
             {% if found_items %}
-
                 {% for item in found_items %}
-
                     <p>
                         <b>{{ item["item"] }}</b><br>
                         👤 Found by {{ item["finder"] }}<br>
                         📍 {{ item["location"] }}
                     </p>
-
                     <hr>
-
                 {% endfor %}
-
             {% else %}
-
                 <p>No found items found.</p>
-
             {% endif %}
-
         </div>
 
-
         <center>
-
             <a href="/">← Back to Home</a>
-
         </center>
-
     </body>
-
     </html>
     """,
     lost_items=lost_items,
@@ -528,8 +567,11 @@ def dashboard():
     location=location,
     item_type=item_type
     )
+
+
 # ---------------- START DATABASE + APP ----------------
+
 init_db()
+
 if __name__ == "__main__":
-    init_db()
     app.run(debug=True)
