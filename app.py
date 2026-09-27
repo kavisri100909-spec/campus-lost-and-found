@@ -221,6 +221,104 @@ def login():
         <button type="submit">Login</button>
 
     </form>
+
+    <br>
+
+    <a href="/register">📝 New user? Register</a>
+    <br><br>
+    <a href="/forgot-password">🔑 Forgot Password?</a>
+    """)
+
+
+# ---------------- FORGOT PASSWORD ----------------
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+
+    if request.method == "POST":
+
+        username = request.form["username"].strip()
+        new_password = request.form["new_password"]
+        confirm_password = request.form["confirm_password"]
+
+        if new_password != confirm_password:
+            return render_template_string("""
+            <h1>❌ Passwords Do Not Match</h1>
+            <p>New password and confirm password must be the same.</p>
+            <br>
+            <a href="/forgot-password">← Try Again</a>
+            """)
+
+        if not new_password:
+            return render_template_string("""
+            <h1>❌ Invalid Password</h1>
+            <p>Password cannot be empty.</p>
+            <br>
+            <a href="/forgot-password">← Try Again</a>
+            """)
+
+        conn = get_db()
+
+        user = db_execute(
+            conn,
+            "SELECT * FROM users WHERE username = ?",
+            (username,)
+        ).fetchone()
+
+        if not user:
+            conn.close()
+            return render_template_string("""
+            <h1>❌ Username Not Found</h1>
+            <p>No account was found with this username.</p>
+            <br>
+            <a href="/forgot-password">← Try Again</a>
+            """)
+
+        password_hash = generate_password_hash(new_password)
+
+        db_execute(
+            conn,
+            "UPDATE users SET password = ? WHERE username = ?",
+            (password_hash, username)
+        )
+
+        conn.commit()
+        conn.close()
+
+        return render_template_string("""
+        <h1>✅ Password Changed Successfully</h1>
+        <p>Your password has been updated.</p>
+        <br>
+        <a href="/login">🔐 Go to Login</a>
+        """)
+
+    return render_template_string("""
+    <h1>🔑 Forgot Password</h1>
+
+    <form method="POST">
+
+        <label>Username:</label><br>
+        <input type="text" name="username" required>
+
+        <br><br>
+
+        <label>New Password:</label><br>
+        <input type="password" name="new_password" required>
+
+        <br><br>
+
+        <label>Confirm New Password:</label><br>
+        <input type="password" name="confirm_password" required>
+
+        <br><br>
+
+        <button type="submit">Change Password</button>
+
+    </form>
+
+    <br>
+
+    <a href="/login">← Back to Login</a>
     """)
 
 
@@ -279,6 +377,10 @@ def register():
         <button type="submit">Register</button>
 
     </form>
+
+    <br>
+
+    <a href="/login">🔐 Already have an account? Login</a>
     """)
 
 
