@@ -196,7 +196,13 @@ def login():
             session["user_id"] = user["id"]
 
             return redirect("/dashboard")
-
+        else:
+            return render_template_string("""
+            <h1>❌ Invalid Username or Password</h1>
+            <p>Username or password is incorrect.</p>
+            <br>
+            <a href="/login">← Try Again</a>
+            """)
     return render_template_string("""
     <h1>🔐 Campus Lost & Found Login</h1>
 
