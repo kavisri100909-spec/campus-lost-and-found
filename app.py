@@ -6,15 +6,280 @@ from psycopg2.extras import RealDictCursor
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = "campus_lost_found_secret_key"
+app.secret_key = os.getenv("SECRET_KEY", "campus_lost_found_secret_key")
 
-# Render will provide DATABASE_URL through the environment.
-# When running locally without DATABASE_URL, SQLite is used automatically.
+# Render provides DATABASE_URL in production.
+# Locally, SQLite is used automatically.
 DATABASE_URL = os.getenv("DATABASE_URL")
 SQLITE_DATABASE = "campus.db"
 
 
-# ---------------- DATABASE ----------------
+# ============================================================
+# SHARED UI
+# ============================================================
+
+APP_CSS = """
+:root{
+    --blue:#2563eb;
+    --blue-dark:#1d4ed8;
+    --purple:#7c3aed;
+    --ink:#0f172a;
+    --muted:#64748b;
+    --line:#dbeafe;
+    --card:#ffffff;
+    --bg:#f4f7ff;
+    --danger:#ef476f;
+    --success:#16b981;
+    --shadow:0 18px 45px rgba(37,99,235,.12);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+body{
+    font-family:Inter,Segoe UI,Arial,sans-serif;
+    background:
+        radial-gradient(circle at 10% 10%, rgba(147,197,253,.45), transparent 30%),
+        radial-gradient(circle at 90% 85%, rgba(196,181,253,.38), transparent 28%),
+        linear-gradient(135deg,#eef7ff 0%,#f7f3ff 48%,#eef8ff 100%);
+    color:var(--ink);
+    min-height:100vh;
+}
+
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.app-wrap{
+    width:min(100%, 480px);
+    min-height:100vh;
+    margin:auto;
+    padding:18px;
+}
+
+.page-card{
+    background:rgba(255,255,255,.90);
+    backdrop-filter:blur(14px);
+    border:1px solid rgba(255,255,255,.8);
+    border-radius:30px;
+    box-shadow:var(--shadow);
+    overflow:hidden;
+}
+
+.brand-head{
+    padding:28px 24px 24px;
+    background:linear-gradient(135deg,var(--blue),var(--purple));
+    color:#fff;
+    position:relative;
+}
+
+.brand-row{display:flex;align-items:center;gap:12px}
+.brand-icon{
+    width:52px;height:52px;border-radius:18px;
+    background:rgba(255,255,255,.18);
+    display:grid;place-items:center;font-size:28px;
+}
+.brand-title{font-size:22px;font-weight:800;line-height:1.1}
+.brand-sub{margin-top:5px;font-size:13px;opacity:.9}
+
+.page-body{padding:24px}
+
+.form-card,.result-card,.info-card{
+    background:#fff;
+    border:1px solid #e5edff;
+    border-radius:22px;
+    padding:22px;
+    box-shadow:0 10px 30px rgba(15,23,42,.06);
+}
+
+.page-title{font-size:27px;font-weight:800;margin-bottom:6px}
+.page-subtitle{color:var(--muted);font-size:14px;line-height:1.5;margin-bottom:20px}
+
+label{
+    display:block;
+    font-size:13px;
+    font-weight:700;
+    margin:14px 0 7px;
+}
+
+input,select,textarea{
+    width:100%;
+    border:1px solid #d8e1f0;
+    background:#f9fbff;
+    border-radius:14px;
+    padding:13px 14px;
+    outline:none;
+    font-size:15px;
+    color:var(--ink);
+}
+input:focus,select:focus,textarea:focus{
+    border-color:#7aa2ff;
+    box-shadow:0 0 0 4px rgba(37,99,235,.10);
+}
+textarea{min-height:110px;resize:vertical}
+
+.btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    width:100%;
+    border:0;
+    border-radius:14px;
+    padding:14px 16px;
+    margin-top:16px;
+    font-size:15px;
+    font-weight:800;
+    cursor:pointer;
+    text-decoration:none;
+    transition:.18s ease;
+}
+.btn:hover{text-decoration:none;transform:translateY(-1px)}
+.btn-primary{
+    color:#fff;
+    background:linear-gradient(135deg,var(--blue),var(--purple));
+    box-shadow:0 12px 24px rgba(67,56,202,.18);
+}
+.btn-soft{
+    color:#23406f;
+    background:#edf4ff;
+}
+.btn-danger{
+    color:#fff;
+    background:linear-gradient(135deg,#f43f5e,#e11d48);
+}
+.btn-success{
+    color:#fff;
+    background:linear-gradient(135deg,#10b981,#059669);
+}
+
+.link-row{
+    text-align:center;
+    margin-top:18px;
+    font-size:14px;
+}
+.link-row a{font-weight:700}
+
+.alert{
+    border-radius:14px;
+    padding:12px 14px;
+    margin-bottom:16px;
+    font-size:14px;
+    line-height:1.4;
+}
+.alert-error{background:#fff1f2;color:#be123c;border:1px solid #fecdd3}
+.alert-success{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}
+.alert-info{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
+
+.back{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    margin-top:18px;
+    font-weight:700;
+    font-size:14px;
+}
+
+.section-title{font-size:18px;font-weight:800;margin-bottom:8px}
+.section-copy{color:var(--muted);font-size:14px;line-height:1.5}
+
+.stat-grid{
+    display:grid;
+    grid-template-columns:repeat(2,1fr);
+    gap:12px;
+    margin:16px 0;
+}
+.stat{
+    padding:16px;
+    border-radius:20px;
+    background:linear-gradient(145deg,#ffffff,#f4f7ff);
+    border:1px solid #e4ebff;
+}
+.stat small{display:block;color:var(--muted);font-weight:700}
+.stat strong{display:block;font-size:28px;margin-top:5px}
+
+.item{
+    padding:16px;
+    border-radius:18px;
+    background:#fff;
+    border:1px solid #e7edf8;
+    margin-top:12px;
+}
+.item.lost{border-left:5px solid var(--danger)}
+.item.found{border-left:5px solid var(--success)}
+.item-title{font-weight:800;font-size:16px}
+.meta{color:var(--muted);font-size:13px;margin-top:5px;line-height:1.5}
+
+.nav-grid{
+    display:grid;
+    grid-template-columns:repeat(2,1fr);
+    gap:12px;
+    margin-top:14px;
+}
+.nav-tile{
+    border-radius:20px;
+    padding:16px;
+    font-weight:800;
+    border:1px solid #e3eaff;
+    background:#fff;
+}
+.nav-tile small{display:block;color:var(--muted);font-weight:600;margin-top:5px}
+.nav-tile.pink{background:linear-gradient(145deg,#fff0f5,#ffffff)}
+.nav-tile.blue{background:linear-gradient(145deg,#eef5ff,#ffffff)}
+.nav-tile.green{background:linear-gradient(145deg,#ecfdf5,#ffffff)}
+.nav-tile.purple{background:linear-gradient(145deg,#f5f3ff,#ffffff)}
+
+.bottom{
+    margin-top:20px;
+    padding:16px 8px 4px;
+    text-align:center;
+    color:#7b879c;
+    font-size:12px;
+}
+
+@media(max-width:420px){
+    .app-wrap{padding:10px}
+    .page-card{border-radius:24px}
+    .page-body{padding:18px}
+}
+"""
+
+def styled_page(content, title="Campus Lost & Found", **context):
+    rendered_content = render_template_string(content, **context)
+    shell = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{ title }}</title>
+        <style>{{ css|safe }}</style>
+    </head>
+    <body>
+        <div class="app-wrap">
+            <div class="page-card">
+                <div class="brand-head">
+                    <div class="brand-row">
+                        <div class="brand-icon">🎒</div>
+                        <div>
+                            <div class="brand-title">Campus Lost &amp; Found</div>
+                            <div class="brand-sub">Find · Report · Reunite 💙</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="page-body">
+                    {{ content|safe }}
+                </div>
+            </div>
+            <div class="bottom">🏫 Campus Lost &amp; Found · Built for campus community</div>
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(shell, title=title, css=APP_CSS, content=rendered_content)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
 
 def get_db():
     if DATABASE_URL:
@@ -29,13 +294,12 @@ def get_db():
 
 
 def db_execute(conn, query, params=()):
-    """Run the same query against SQLite or PostgreSQL."""
+    """Run the same parameter style against SQLite or PostgreSQL."""
     if DATABASE_URL:
         query = query.replace("?", "%s")
         cur = conn.cursor()
         cur.execute(query, params)
         return cur
-
     return conn.execute(query, params)
 
 
@@ -43,8 +307,6 @@ def init_db():
     conn = get_db()
 
     if DATABASE_URL:
-
-        # LOST ITEMS
         conn.cursor().execute("""
             CREATE TABLE IF NOT EXISTS lost_items (
                 id SERIAL PRIMARY KEY,
@@ -56,7 +318,6 @@ def init_db():
             )
         """)
 
-        # FOUND ITEMS
         conn.cursor().execute("""
             CREATE TABLE IF NOT EXISTS found_items (
                 id SERIAL PRIMARY KEY,
@@ -68,7 +329,6 @@ def init_db():
             )
         """)
 
-        # NOTIFICATIONS
         conn.cursor().execute("""
             CREATE TABLE IF NOT EXISTS notifications (
                 id SERIAL PRIMARY KEY,
@@ -78,7 +338,6 @@ def init_db():
             )
         """)
 
-        # USERS
         conn.cursor().execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -87,25 +346,20 @@ def init_db():
             )
         """)
 
-        # Add user_id to old tables if they already existed
         conn.cursor().execute("""
             ALTER TABLE lost_items
             ADD COLUMN IF NOT EXISTS user_id INTEGER
         """)
-
         conn.cursor().execute("""
             ALTER TABLE found_items
             ADD COLUMN IF NOT EXISTS user_id INTEGER
         """)
-
         conn.cursor().execute("""
             ALTER TABLE notifications
             ADD COLUMN IF NOT EXISTS user_id INTEGER
         """)
 
     else:
-
-        # LOST ITEMS
         conn.execute("""
             CREATE TABLE IF NOT EXISTS lost_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,7 +371,6 @@ def init_db():
             )
         """)
 
-        # FOUND ITEMS
         conn.execute("""
             CREATE TABLE IF NOT EXISTS found_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +382,6 @@ def init_db():
             )
         """)
 
-        # USERS
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +390,6 @@ def init_db():
             )
         """)
 
-        # NOTIFICATIONS
         conn.execute("""
             CREATE TABLE IF NOT EXISTS notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,7 +399,6 @@ def init_db():
             )
         """)
 
-        # Add user_id to old SQLite tables if needed
         tables = {
             "lost_items": "user_id",
             "found_items": "user_id",
@@ -159,9 +409,7 @@ def init_db():
             columns = conn.execute(
                 f"PRAGMA table_info({table})"
             ).fetchall()
-
             column_names = [row["name"] for row in columns]
-
             if column not in column_names:
                 conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN {column} INTEGER"
@@ -171,94 +419,100 @@ def init_db():
     conn.close()
 
 
-# ---------------- LOGIN ----------------
+# ============================================================
+# LOGIN
+# ============================================================
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-
     if request.method == "POST":
-
         username = request.form["username"].strip()
         password = request.form["password"]
 
         conn = get_db()
-
         user = db_execute(
             conn,
             "SELECT * FROM users WHERE username = ?",
             (username,)
         ).fetchone()
-
         conn.close()
 
         if user and check_password_hash(user["password"], password):
             session["username"] = user["username"]
             session["user_id"] = user["id"]
+            return redirect("/")
 
-            return redirect("/dashboard")
-        else:
-            return render_template_string("""
-            <h1>❌ Invalid Username or Password</h1>
-            <p>Username or password is incorrect.</p>
-            <br>
-            <a href="/login">← Try Again</a>
-            """)
-    return render_template_string("""
-    <h1>🔐 Campus Lost & Found Login</h1>
+        return styled_page("""
+            <div class="form-card">
+                <div class="page-title">❌ Login Failed</div>
+                <div class="page-subtitle">The username or password you entered is incorrect.</div>
+                <div class="alert alert-error">
+                    Please check your credentials and try again.
+                </div>
+                <a class="btn btn-primary" href="/login">🔐 Try Again</a>
+                <div class="link-row">
+                    <a href="/forgot-password">🔑 Forgot Password?</a>
+                </div>
+            </div>
+        """, title="Login Error")
 
-    <form method="POST">
+    return styled_page("""
+        <div class="form-card">
+            <div class="page-title">Welcome Back! 👋</div>
+            <div class="page-subtitle">Login to continue to your campus Lost &amp; Found account.</div>
 
-        <label>Username:</label><br>
-        <input type="text" name="username" required>
+            <form method="POST">
+                <label>Username</label>
+                <input type="text" name="username" placeholder="Enter your username" required>
 
-        <br><br>
+                <label>Password</label>
+                <input type="password" name="password" placeholder="Enter your password" required>
 
-        <label>Password:</label><br>
-        <input type="password" name="password" required>
+                <button class="btn btn-primary" type="submit">🔐 Login</button>
+            </form>
 
-        <br><br>
-
-        <button type="submit">Login</button>
-
-    </form>
-
-    <br>
-
-    <a href="/register">📝 New user? Register</a>
-    <br><br>
-    <a href="/forgot-password">🔑 Forgot Password?</a>
-    """)
+            <div class="link-row">
+                New user? <a href="/register">Create an account</a>
+            </div>
+            <div class="link-row">
+                <a href="/forgot-password">🔑 Forgot Password?</a>
+            </div>
+        </div>
+    """, title="Login")
 
 
-# ---------------- FORGOT PASSWORD ----------------
+# ============================================================
+# FORGOT PASSWORD
+# ============================================================
 
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
-
     if request.method == "POST":
-
         username = request.form["username"].strip()
         new_password = request.form["new_password"]
         confirm_password = request.form["confirm_password"]
 
-        if new_password != confirm_password:
-            return render_template_string("""
-            <h1>❌ Passwords Do Not Match</h1>
-            <p>New password and confirm password must be the same.</p>
-            <br>
-            <a href="/forgot-password">← Try Again</a>
-            """)
-
         if not new_password:
-            return render_template_string("""
-            <h1>❌ Invalid Password</h1>
-            <p>Password cannot be empty.</p>
-            <br>
-            <a href="/forgot-password">← Try Again</a>
-            """)
+            return styled_page("""
+                <div class="form-card">
+                    <div class="page-title">❌ Invalid Password</div>
+                    <div class="alert alert-error">Password cannot be empty.</div>
+                    <a class="btn btn-soft" href="/forgot-password">← Try Again</a>
+                </div>
+            """, title="Forgot Password")
+
+        if new_password != confirm_password:
+            return styled_page("""
+                <div class="form-card">
+                    <div class="page-title">❌ Passwords Do Not Match</div>
+                    <div class="alert alert-error">
+                        New password and confirm password must be the same.
+                    </div>
+                    <a class="btn btn-soft" href="/forgot-password">← Try Again</a>
+                </div>
+            """, title="Forgot Password")
 
         conn = get_db()
-
         user = db_execute(
             conn,
             "SELECT * FROM users WHERE username = ?",
@@ -267,73 +521,74 @@ def forgot_password():
 
         if not user:
             conn.close()
-            return render_template_string("""
-            <h1>❌ Username Not Found</h1>
-            <p>No account was found with this username.</p>
-            <br>
-            <a href="/forgot-password">← Try Again</a>
-            """)
+            return styled_page("""
+                <div class="form-card">
+                    <div class="page-title">❌ Username Not Found</div>
+                    <div class="alert alert-error">
+                        No account was found with this username.
+                    </div>
+                    <a class="btn btn-soft" href="/forgot-password">← Try Again</a>
+                </div>
+            """, title="Forgot Password")
 
         password_hash = generate_password_hash(new_password)
-
         db_execute(
             conn,
             "UPDATE users SET password = ? WHERE username = ?",
             (password_hash, username)
         )
-
         conn.commit()
         conn.close()
 
-        return render_template_string("""
-        <h1>✅ Password Changed Successfully</h1>
-        <p>Your password has been updated.</p>
-        <br>
-        <a href="/login">🔐 Go to Login</a>
-        """)
+        return styled_page("""
+            <div class="result-card">
+                <div class="page-title">✅ Password Changed!</div>
+                <div class="page-subtitle">Your new password has been saved successfully.</div>
+                <div class="alert alert-success">
+                    You can now login with your username and new password.
+                </div>
+                <a class="btn btn-primary" href="/login">🔐 Go to Login</a>
+            </div>
+        """, title="Password Updated")
 
-    return render_template_string("""
-    <h1>🔑 Forgot Password</h1>
+    return styled_page("""
+        <div class="form-card">
+            <div class="page-title">Forgot Password? 🔑</div>
+            <div class="page-subtitle">
+                Enter your username and choose a new password.
+            </div>
 
-    <form method="POST">
+            <form method="POST">
+                <label>Username</label>
+                <input type="text" name="username" placeholder="Your username" required>
 
-        <label>Username:</label><br>
-        <input type="text" name="username" required>
+                <label>New Password</label>
+                <input type="password" name="new_password" placeholder="Create a new password" required>
 
-        <br><br>
+                <label>Confirm New Password</label>
+                <input type="password" name="confirm_password" placeholder="Repeat the new password" required>
 
-        <label>New Password:</label><br>
-        <input type="password" name="new_password" required>
+                <button class="btn btn-primary" type="submit">🔑 Change Password</button>
+            </form>
 
-        <br><br>
-
-        <label>Confirm New Password:</label><br>
-        <input type="password" name="confirm_password" required>
-
-        <br><br>
-
-        <button type="submit">Change Password</button>
-
-    </form>
-
-    <br>
-
-    <a href="/login">← Back to Login</a>
-    """)
+            <div class="link-row">
+                <a href="/login">← Back to Login</a>
+            </div>
+        </div>
+    """, title="Forgot Password")
 
 
-# ---------------- REGISTER ----------------
+# ============================================================
+# REGISTER
+# ============================================================
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-
     if request.method == "POST":
-
         username = request.form["username"].strip()
         password = request.form["password"]
 
         conn = get_db()
-
         password_hash = generate_password_hash(password)
 
         try:
@@ -342,67 +597,71 @@ def register():
                 "INSERT INTO users (username, password) VALUES (?, ?)",
                 (username, password_hash)
             )
-
             conn.commit()
             conn.close()
-
             return redirect("/login")
 
         except Exception as e:
             conn.close()
+            return styled_page("""
+                <div class="form-card">
+                    <div class="page-title">❌ Registration Error</div>
+                    <div class="alert alert-error">
+                        Username may already exist.
+                    </div>
+                    <details>
+                        <summary>Technical details</summary>
+                        <p class="meta">{{ error }}</p>
+                    </details>
+                    <a class="btn btn-soft" href="/register">← Back to Register</a>
+                </div>
+            """, title="Registration Error", error=str(e))
 
-            return render_template_string("""
-            <h1>Registration Error</h1>
-            <p>Username may already exist.</p>
-            <p>{{ error }}</p>
-            <br>
-            <a href="/register">← Back to Register</a>
-            """, error=str(e))
+    return styled_page("""
+        <div class="form-card">
+            <div class="page-title">Create Account 📝</div>
+            <div class="page-subtitle">
+                Join Campus Lost &amp; Found to report and track items.
+            </div>
 
-    return render_template_string("""
-    <h1>📝 Campus Lost & Found Register</h1>
+            <form method="POST">
+                <label>Username</label>
+                <input type="text" name="username" placeholder="Choose a username" required>
 
-    <form method="POST">
+                <label>Password</label>
+                <input type="password" name="password" placeholder="Create a password" required>
 
-        <label>Username:</label><br>
-        <input type="text" name="username" required>
+                <button class="btn btn-primary" type="submit">📝 Register</button>
+            </form>
 
-        <br><br>
-
-        <label>Password:</label><br>
-        <input type="password" name="password" required>
-
-        <br><br>
-
-        <button type="submit">Register</button>
-
-    </form>
-
-    <br>
-
-    <a href="/login">🔐 Already have an account? Login</a>
-    """)
+            <div class="link-row">
+                Already have an account? <a href="/login">Login</a>
+            </div>
+        </div>
+    """, title="Register")
 
 
-# ---------------- HOME ----------------
+# ============================================================
+# HOME
+# ============================================================
 
 @app.route("/")
 def home():
     if "user_id" not in session:
         return redirect("/login")
-    return render_template("index.html")
+    return render_template("index.html", username=session.get("username", "User"))
 
 
-# ---------------- REPORT LOST ----------------
+# ============================================================
+# REPORT LOST
+# ============================================================
 
 @app.route("/report-lost", methods=["GET", "POST"])
 def report_lost():
-
     if "user_id" not in session:
         return redirect("/login")
 
     if request.method == "POST":
-
         name = request.form["name"].strip()
         item = request.form["item"].strip().lower()
         location = request.form["location"].strip()
@@ -410,7 +669,6 @@ def report_lost():
 
         conn = get_db()
 
-        # Save lost item
         db_execute(
             conn,
             """
@@ -418,16 +676,9 @@ def report_lost():
             (name, item, location, contact, user_id)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (
-                name,
-                item,
-                location,
-                contact,
-                session["user_id"]
-            )
+            (name, item, location, contact, session["user_id"])
         )
 
-        # Check already reported found items
         found_items = db_execute(
             conn,
             "SELECT * FROM found_items WHERE LOWER(item) = LOWER(?)",
@@ -437,8 +688,6 @@ def report_lost():
         matched = False
 
         for found in found_items:
-
-            # Avoid duplicate notification
             existing = db_execute(
                 conn,
                 """
@@ -455,7 +704,6 @@ def report_lost():
             ).fetchone()
 
             if not existing:
-
                 message = (
                     f"🔔 Your lost item '{item}' has been found! "
                     f"Found at {found['location']}. "
@@ -470,11 +718,7 @@ def report_lost():
                     (name, message, user_id)
                     VALUES (?, ?, ?)
                     """,
-                    (
-                        name,
-                        message,
-                        session["user_id"]
-                    )
+                    (name, message, session["user_id"])
                 )
 
             matched = True
@@ -483,100 +727,76 @@ def report_lost():
         conn.close()
 
         if matched:
+            return styled_page("""
+                <div class="result-card">
+                    <div class="page-title">🎉 Match Found!</div>
+                    <div class="page-subtitle">
+                        Your lost item matches an item that was already reported as found.
+                    </div>
+                    <div class="alert alert-success">
+                        🔔 A notification has been sent to <b>{{ name }}</b>.
+                    </div>
+                    <p class="section-copy">
+                        📱 Open Notifications to see the finder's contact number.
+                    </p>
+                    <a class="btn btn-primary" href="/">🏠 Back to Home</a>
+                    <a class="btn btn-soft" href="/notifications">🔔 Open Notifications</a>
+                </div>
+            """, title="Match Found", name=name)
 
-            return render_template_string("""
-            <h1>🎉 Match Found!</h1>
+        return styled_page("""
+            <div class="result-card">
+                <div class="page-title">✅ Lost Item Reported!</div>
+                <div class="page-subtitle">Your report has been saved to the system.</div>
+                <div class="alert alert-info">
+                    <b>Item:</b> {{ item }}<br>
+                    <b>Name:</b> {{ name }}
+                </div>
+                <p class="section-copy">
+                    We will notify you automatically if a matching found item is reported.
+                </p>
+                <a class="btn btn-primary" href="/">🏠 Back to Home</a>
+            </div>
+        """, title="Lost Item Reported", name=name, item=item)
 
-            <p>
-                Your lost item matches an item that was already
-                reported as found.
-            </p>
+    return styled_page("""
+        <div class="form-card">
+            <div class="page-title">Report Lost Item 🔴</div>
+            <div class="page-subtitle">
+                Add the item details so the owner can be notified when a match is found.
+            </div>
 
-            <p>
-                🔔 A notification has been sent to
-                <b>{{ name }}</b>.
-            </p>
+            <form method="POST">
+                <label>Your Name</label>
+                <input type="text" name="name" placeholder="Your name" required>
 
-            <p>
-                📱 Check your notifications to see the finder's
-                contact number.
-            </p>
+                <label>Item Name</label>
+                <input type="text" name="item" placeholder="e.g. Wallet, ID Card, Phone" required>
 
-            <br>
+                <label>Lost Location</label>
+                <input type="text" name="location" placeholder="e.g. Library, Lab 2" required>
 
-            <a href="/">← Back to Home</a>
+                <label>Contact Number</label>
+                <input type="tel" name="contact" placeholder="Your contact number" required>
 
-            """, name=name)
+                <button class="btn btn-danger" type="submit">📤 Submit Lost Report</button>
+            </form>
 
-        return render_template_string("""
-        <h1>✅ Lost Item Reported!</h1>
-
-        <p><b>Name:</b> {{ name }}</p>
-        <p><b>Item:</b> {{ item }}</p>
-
-        <p>
-            💾 Your report has been saved.
-        </p>
-
-        <p>
-            We will notify you automatically if a matching
-            found item is reported.
-        </p>
-
-        <br>
-
-        <a href="/">← Back to Home</a>
-
-        """, name=name, item=item)
-
-    return render_template_string("""
-    <h1>🔴 Report Lost Item</h1>
-
-    <form method="POST">
-
-        <label>Your Name:</label><br>
-        <input type="text" name="name" required>
-
-        <br><br>
-
-        <label>Item Name:</label><br>
-        <input type="text" name="item" required>
-
-        <br><br>
-
-        <label>Lost Location:</label><br>
-        <input type="text" name="location" required>
-
-        <br><br>
-
-        <label>Contact Number:</label><br>
-        <input type="tel" name="contact" required>
-
-        <br><br>
-
-        <button type="submit">
-            Submit Report
-        </button>
-
-    </form>
-
-    <br>
-
-    <a href="/">← Back to Home</a>
-
-    """)
+            <a class="back" href="/">← Back to Home</a>
+        </div>
+    """, title="Report Lost Item")
 
 
-# ---------------- REPORT FOUND ----------------
+# ============================================================
+# REPORT FOUND
+# ============================================================
 
 @app.route("/report-found", methods=["GET", "POST"])
 def report_found():
-
     if "user_id" not in session:
         return redirect("/login")
 
     if request.method == "POST":
-
         finder = request.form["finder"].strip()
         item = request.form["item"].strip()
         location = request.form["location"].strip()
@@ -584,7 +804,6 @@ def report_found():
 
         conn = get_db()
 
-        # Save found item
         db_execute(
             conn,
             """
@@ -592,16 +811,9 @@ def report_found():
             (finder, item, location, contact, user_id)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (
-                finder,
-                item,
-                location,
-                contact,
-                session["user_id"]
-            )
+            (finder, item, location, contact, session["user_id"])
         )
 
-        # Find matching lost reports
         lost_items = db_execute(
             conn,
             """
@@ -614,9 +826,7 @@ def report_found():
 
         matched_names = []
 
-        # Create one notification per matching lost report
         for lost in lost_items:
-
             existing = db_execute(
                 conn,
                 """
@@ -633,7 +843,6 @@ def report_found():
             ).fetchone()
 
             if not existing:
-
                 message = (
                     f"🔔 Your lost item '{item}' has been found! "
                     f"Found at {location}. "
@@ -648,11 +857,7 @@ def report_found():
                     (name, message, user_id)
                     VALUES (?, ?, ?)
                     """,
-                    (
-                        lost["name"],
-                        message,
-                        lost["user_id"]
-                    )
+                    (lost["name"], message, lost["user_id"])
                 )
 
             matched_names.append(lost["name"])
@@ -661,105 +866,76 @@ def report_found():
         conn.close()
 
         if matched_names:
+            names = ", ".join(dict.fromkeys(matched_names))
+            return styled_page("""
+                <div class="result-card">
+                    <div class="page-title">🎉 Match Found!</div>
+                    <div class="page-subtitle">
+                        The found item matches a lost-item report.
+                    </div>
+                    <div class="alert alert-success">
+                        🔔 Notification sent to: <b>{{ names }}</b>
+                    </div>
+                    <p class="section-copy">
+                        📱 The matched user can see your contact number in their notification.
+                    </p>
+                    <a class="btn btn-success" href="/">🏠 Back to Home</a>
+                </div>
+            """, title="Match Found", names=names)
 
-            names = ", ".join(
-                dict.fromkeys(matched_names)
-            )
+        return styled_page("""
+            <div class="result-card">
+                <div class="page-title">ℹ️ No Match Found</div>
+                <div class="page-subtitle">
+                    The found item has been saved successfully.
+                </div>
+                <div class="alert alert-info">
+                    We will keep it in the system for future matching.
+                </div>
+                <a class="btn btn-primary" href="/">🏠 Back to Home</a>
+            </div>
+        """, title="No Match Found")
 
-            # Do NOT show the finder's phone number to the finder.
-            # The contact number is available to the matched
-            # lost reporter through their notification.
+    return styled_page("""
+        <div class="form-card">
+            <div class="page-title">Report Found Item 🟢</div>
+            <div class="page-subtitle">
+                Add the details of the item you found so the owner can be notified.
+            </div>
 
-            return render_template_string("""
-            <h1>🎉 Match Found!</h1>
+            <form method="POST">
+                <label>Your Name</label>
+                <input type="text" name="finder" placeholder="Your name" required>
 
-            <p>
-                The found item matches a lost-item report.
-            </p>
+                <label>Found Item Name</label>
+                <input type="text" name="item" placeholder="e.g. Wallet, Laptop, ID Card" required>
 
-            <h3>🔔 Notification sent to:</h3>
+                <label>Found Location</label>
+                <input type="text" name="location" placeholder="e.g. Library, Canteen" required>
 
-            <p>✅ {{ names }}</p>
+                <label>Contact Number</label>
+                <input type="tel" name="contact" placeholder="Your contact number" required>
 
-            <p>
-                📱 The matched user can see your contact
-                number in their notification.
-            </p>
+                <button class="btn btn-success" type="submit">📤 Submit Found Report</button>
+            </form>
 
-            <br>
-
-            <a href="/">← Back to Home</a>
-
-            """, names=names)
-
-        return render_template_string("""
-        <h1>ℹ️ No Match Found</h1>
-
-        <p>
-            The found item has been saved.
-        </p>
-
-        <p>
-            We will keep it in the system for future matching.
-        </p>
-
-        <br>
-
-        <a href="/">← Back to Home</a>
-
-        """)
-
-    # GET request
-    return render_template_string("""
-    <h1>🟢 Report Found Item</h1>
-
-    <form method="POST">
-
-        <label>Your Name:</label><br>
-        <input type="text" name="finder" required>
-
-        <br><br>
-
-        <label>Found Item Name:</label><br>
-        <input type="text" name="item" required>
-
-        <br><br>
-
-        <label>Found Location:</label><br>
-        <input type="text" name="location" required>
-
-        <br><br>
-
-        <label>Contact Number:</label><br>
-        <input type="tel" name="contact" required>
-
-        <br><br>
-
-        <button type="submit">
-            Submit Found Item
-        </button>
-
-    </form>
-
-    <br>
-
-    <a href="/">← Back to Home</a>
-
-    """)
+            <a class="back" href="/">← Back to Home</a>
+        </div>
+    """, title="Report Found Item")
 
 
-# ---------------- NOTIFICATIONS ----------------
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
 
 @app.route("/notifications")
 def show_notifications():
-
     if "user_id" not in session:
         return redirect("/login")
 
     name = session["username"]
 
     conn = get_db()
-
     messages = db_execute(
         conn,
         """
@@ -770,67 +946,48 @@ def show_notifications():
         """,
         (session["user_id"],)
     ).fetchall()
-
     conn.close()
 
-    return render_template_string("""
-    <h1>🔔 Your Notifications</h1>
+    return styled_page("""
+        <div class="info-card">
+            <div class="page-title">Notifications 🔔</div>
+            <div class="page-subtitle">
+                Updates and item matches for <b>{{ name }}</b>.
+            </div>
 
-    {% if messages %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="item">
+                        <div class="item-title">🔔 Update</div>
+                        <div class="meta">{{ message["message"] }}</div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="alert alert-info">
+                    No notifications found for <b>{{ name }}</b>.
+                </div>
+            {% endif %}
 
-        {% for message in messages %}
-
-            <p>
-                🟢 {{ message["message"] }}
-            </p>
-
-        {% endfor %}
-
-    {% else %}
-
-        <p>
-            No notifications found for
-            <b>{{ name }}</b>.
-        </p>
-
-    {% endif %}
-
-    <br>
-
-    <a href="/">← Back to Home</a>
-
-    """,
-    messages=messages,
-    name=name
-    )
+            <a class="btn btn-primary" href="/">🏠 Back to Home</a>
+        </div>
+    """, title="Notifications", messages=messages, name=name)
 
 
-# ---------------- DASHBOARD ----------------
+# ============================================================
+# DASHBOARD
+# ============================================================
 
 @app.route("/dashboard")
 def dashboard():
-
     if "user_id" not in session:
         return redirect("/login")
 
-    search = request.args.get(
-        "search",
-        ""
-    ).strip().lower()
-
-    item_type = request.args.get(
-        "type",
-        "all"
-    )
-
-    location = request.args.get(
-        "location",
-        ""
-    ).strip().lower()
+    search = request.args.get("search", "").strip().lower()
+    item_type = request.args.get("type", "all")
+    location = request.args.get("location", "").strip().lower()
 
     conn = get_db()
 
-    # Only logged-in user's lost reports
     lost_items = db_execute(
         conn,
         """
@@ -842,7 +999,6 @@ def dashboard():
         (session["user_id"],)
     ).fetchall()
 
-    # Only logged-in user's found reports
     found_items = db_execute(
         conn,
         """
@@ -856,16 +1012,13 @@ def dashboard():
 
     conn.close()
 
-    # Search
     if search:
-
         lost_items = [
             x for x in lost_items
             if search in x["item"].lower()
             or search in x["name"].lower()
             or search in x["location"].lower()
         ]
-
         found_items = [
             x for x in found_items
             if search in x["item"].lower()
@@ -873,173 +1026,49 @@ def dashboard():
             or search in x["location"].lower()
         ]
 
-    # Location filter
     if location:
-
         lost_items = [
             x for x in lost_items
             if location in x["location"].lower()
         ]
-
         found_items = [
             x for x in found_items
             if location in x["location"].lower()
         ]
 
-    # Type filter
     if item_type == "lost":
-
         found_items = []
-
     elif item_type == "found":
-
         lost_items = []
 
-    return render_template_string("""
-    <!DOCTYPE html>
-
-    <html>
-
-    <head>
-
-        <title>
-            Campus Lost & Found Dashboard
-        </title>
-
-        <style>
-
-            body {
-                font-family: Arial, sans-serif;
-                background: #eef6ff;
-                padding: 30px;
-            }
-
-            h1 {
-                text-align: center;
-                color: #1769aa;
-            }
-
-            .search-box {
-                background: white;
-                padding: 20px;
-                max-width: 800px;
-                margin: 25px auto;
-                border-radius: 12px;
-                box-shadow:
-                    0 3px 10px
-                    rgba(0,0,0,0.12);
-            }
-
-            input, select {
-                padding: 12px;
-                margin: 5px;
-                border: 1px solid #bbb;
-                border-radius: 7px;
-            }
-
-            button {
-                padding: 12px 20px;
-                background: #1769aa;
-                color: white;
-                border: none;
-                border-radius: 7px;
-                cursor: pointer;
-            }
-
-            .stats {
-                display: flex;
-                gap: 20px;
-                justify-content: center;
-                margin: 25px;
-                flex-wrap: wrap;
-            }
-
-            .box {
-                background: white;
-                padding: 20px;
-                border-radius: 12px;
-                text-align: center;
-                min-width: 150px;
-                box-shadow:
-                    0 3px 10px
-                    rgba(0,0,0,0.12);
-            }
-
-            .items {
-                background: white;
-                padding: 20px;
-                margin: 20px auto;
-                max-width: 800px;
-                border-radius: 12px;
-                box-shadow:
-                    0 3px 10px
-                    rgba(0,0,0,0.12);
-            }
-
-            .lost {
-                border-left: 6px solid #e53935;
-            }
-
-            .found {
-                border-left: 6px solid #2e7d32;
-            }
-
-            a {
-                text-decoration: none;
-                color: #1769aa;
-            }
-
-        </style>
-
-    </head>
-
-    <body>
-
-        <h1>
-            📊 Campus Lost & Found Dashboard
-        </h1>
-
-        <div class="stats">
-
-            <div class="box">
-
-                <h3>🔴 Lost</h3>
-
-                <p>
-                    {{ lost_items|length }}
-                </p>
-
+    return styled_page("""
+        <div class="info-card">
+            <div class="page-title">Your Dashboard 📊</div>
+            <div class="page-subtitle">
+                Track your own lost and found reports.
             </div>
 
-            <div class="box">
-
-                <h3>🟢 Found</h3>
-
-                <p>
-                    {{ found_items|length }}
-                </p>
-
+            <div class="stat-grid">
+                <div class="stat">
+                    <small>🔴 Lost Items</small>
+                    <strong>{{ lost_items|length }}</strong>
+                </div>
+                <div class="stat">
+                    <small>🟢 Found Items</small>
+                    <strong>{{ found_items|length }}</strong>
+                </div>
             </div>
 
-        </div>
-
-
-        <!-- SEARCH + FILTER -->
-
-        <div class="search-box">
-
-            <form
-                method="GET"
-                action="/dashboard"
-            >
-
+            <form method="GET" action="/dashboard">
+                <label>Search</label>
                 <input
                     type="text"
                     name="search"
-                    placeholder="🔍 Search item, name or location"
+                    placeholder="🔍 Item, name or location"
                     value="{{ search }}"
                 >
 
+                <label>Location</label>
                 <input
                     type="text"
                     name="location"
@@ -1047,148 +1076,51 @@ def dashboard():
                     value="{{ location }}"
                 >
 
+                <label>Item Type</label>
                 <select name="type">
-
-                    <option
-                        value="all"
-                        {% if item_type == "all" %}
-                        selected
-                        {% endif %}
-                    >
-                        All Items
-                    </option>
-
-                    <option
-                        value="lost"
-                        {% if item_type == "lost" %}
-                        selected
-                        {% endif %}
-                    >
-                        🔴 Lost Items
-                    </option>
-
-                    <option
-                        value="found"
-                        {% if item_type == "found" %}
-                        selected
-                        {% endif %}
-                    >
-                        🟢 Found Items
-                    </option>
-
+                    <option value="all" {% if item_type == "all" %}selected{% endif %}>All Items</option>
+                    <option value="lost" {% if item_type == "lost" %}selected{% endif %}>🔴 Lost Items</option>
+                    <option value="found" {% if item_type == "found" %}selected{% endif %}>🟢 Found Items</option>
                 </select>
 
-                <button type="submit">
-                    🔍 Search
-                </button>
-
+                <button class="btn btn-primary" type="submit">🔍 Search Reports</button>
             </form>
-
         </div>
 
-
-        <!-- LOST ITEMS -->
-
-        <div class="items lost">
-
-            <h2>
-                🔴 Lost Items
-                ({{ lost_items|length }})
-            </h2>
+        <div class="info-card" style="margin-top:16px">
+            <div class="section-title">🔴 Lost Items</div>
 
             {% if lost_items %}
-
                 {% for item in lost_items %}
-
-                    <p>
-
-                        <b>
-                            {{ item["item"] }}
-                        </b>
-
-                        <br>
-
-                        👤 {{ item["name"] }}
-
-                        <br>
-
-                        📍 {{ item["location"] }}
-
-                    </p>
-
-                    <hr>
-
+                    <div class="item lost">
+                        <div class="item-title">{{ item["item"] }}</div>
+                        <div class="meta">👤 {{ item["name"] }} · 📍 {{ item["location"] }}</div>
+                    </div>
                 {% endfor %}
-
             {% else %}
-
-                <p>
-                    No lost items found.
-                </p>
-
+                <div class="alert alert-info">No lost items found.</div>
             {% endif %}
-
         </div>
 
-
-        <!-- FOUND ITEMS -->
-
-        <div class="items found">
-
-            <h2>
-                🟢 Found Items
-                ({{ found_items|length }})
-            </h2>
+        <div class="info-card" style="margin-top:16px">
+            <div class="section-title">🟢 Found Items</div>
 
             {% if found_items %}
-
                 {% for item in found_items %}
-
-                    <p>
-
-                        <b>
-                            {{ item["item"] }}
-                        </b>
-
-                        <br>
-
-                        👤 Found by
-                        {{ item["finder"] }}
-
-                        <br>
-
-                        📍 {{ item["location"] }}
-
-                    </p>
-
-                    <hr>
-
+                    <div class="item found">
+                        <div class="item-title">{{ item["item"] }}</div>
+                        <div class="meta">👤 Found by {{ item["finder"] }} · 📍 {{ item["location"] }}</div>
+                    </div>
                 {% endfor %}
-
             {% else %}
-
-                <p>
-                    No found items found.
-                </p>
-
+                <div class="alert alert-info">No found items found.</div>
             {% endif %}
-
         </div>
 
-
-        <center>
-
-            <a href="/">
-                ← Back to Home
-            </a>
-
-        </center>
-
-    </body>
-
-    </html>
-
+        <a class="btn btn-soft" href="/">🏠 Back to Home</a>
+        <a class="btn btn-danger" href="/logout">🚪 Logout</a>
     """,
+    title="Dashboard",
     lost_items=lost_items,
     found_items=found_items,
     search=search,
@@ -1197,10 +1129,22 @@ def dashboard():
     )
 
 
-# ---------------- START DATABASE + APP ----------------
+# ============================================================
+# LOGOUT
+# ============================================================
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
+
+
+# ============================================================
+# START
+# ============================================================
 
 init_db()
 
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
