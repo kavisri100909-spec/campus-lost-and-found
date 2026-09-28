@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template, render_template_string, session, redirect
 import os
+import re
 import sqlite3
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -301,6 +302,22 @@ def db_execute(conn, query, params=()):
         cur.execute(query, params)
         return cur
     return conn.execute(query, params)
+
+
+def items_match(item_a, item_b):
+    """Check whether two item descriptions have meaningful keyword overlap."""
+    a_words = set(re.findall(r"[a-z0-9]+", item_a.lower()))
+    b_words = set(re.findall(r"[a-z0-9]+", item_b.lower()))
+
+    # Ignore very common/generic words that are not useful for matching.
+    stop_words = {
+        "the", "a", "an", "my", "this", "that", "and", "or",
+        "item", "lost", "found"
+    }
+    a_words -= stop_words
+    b_words -= stop_words
+
+    return bool(a_words & b_words)
 
 
 def init_db():
@@ -679,11 +696,15 @@ def report_lost():
             (name, item, location, contact, session["user_id"])
         )
 
-        found_items = db_execute(
+        all_found_items = db_execute(
             conn,
-            "SELECT * FROM found_items WHERE LOWER(item) = LOWER(?)",
-            (item,)
+            "SELECT * FROM found_items"
         ).fetchall()
+
+        found_items = [
+            found for found in all_found_items
+            if items_match(item, found["item"])
+        ]
 
         matched = False
 
@@ -814,15 +835,18 @@ def report_found():
             (finder, item, location, contact, session["user_id"])
         )
 
-        lost_items = db_execute(
+        all_lost_items = db_execute(
             conn,
             """
             SELECT *
             FROM lost_items
-            WHERE LOWER(item) = LOWER(?)
-            """,
-            (item,)
+            """
         ).fetchall()
+
+        lost_items = [
+            lost for lost in all_lost_items
+            if items_match(item, lost["item"])
+        ]
 
         matched_names = []
 
