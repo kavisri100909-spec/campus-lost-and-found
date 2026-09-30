@@ -484,6 +484,17 @@ def init_db():
             )
         """)
 
+        # Create notifications before checking/updating its columns.
+        # This is required for a fresh SQLite database on Render/local runs.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                message TEXT NOT NULL,
+                user_id INTEGER
+            )
+        """)
+
         notification_columns = [row["name"] for row in conn.execute("PRAGMA table_info(notifications)").fetchall()]
         if "notification_type" not in notification_columns:
             conn.execute("ALTER TABLE notifications ADD COLUMN notification_type TEXT DEFAULT 'info'")
