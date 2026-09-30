@@ -3,6 +3,7 @@ from werkzeug.utils import secure_filename
 import os
 import re
 import sqlite3
+from datetime import timedelta
 try:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -13,6 +14,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "campus_lost_found_secret_key")
+# Keep the login session active even after the browser is closed.
+app.permanent_session_lifetime = timedelta(days=30)
 
 # Render provides DATABASE_URL in production.
 # Locally, SQLite is used automatically.
@@ -386,6 +389,24 @@ def init_db():
         """)
 
         conn.cursor().execute("""
+            ALTER TABLE notifications
+            ADD COLUMN IF NOT EXISTS notification_type TEXT DEFAULT 'info'
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE notifications
+            ADD COLUMN IF NOT EXISTS reference_id INTEGER
+        """)
+        conn.cursor().execute("""
+            CREATE TABLE IF NOT EXISTS match_requests (
+                id SERIAL PRIMARY KEY,
+                lost_id INTEGER NOT NULL,
+                found_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.cursor().execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
@@ -404,6 +425,14 @@ def init_db():
         conn.cursor().execute("""
             ALTER TABLE notifications
             ADD COLUMN IF NOT EXISTS user_id INTEGER
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE notifications
+            ADD COLUMN IF NOT EXISTS notification_type TEXT DEFAULT 'info'
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE notifications
+            ADD COLUMN IF NOT EXISTS reference_id INTEGER
         """)
         conn.cursor().execute("""
             ALTER TABLE lost_items
@@ -452,6 +481,21 @@ def init_db():
                 photo TEXT,
                 user_id INTEGER,
                 matched INTEGER DEFAULT 0
+            )
+        """)
+
+        notification_columns = [row["name"] for row in conn.execute("PRAGMA table_info(notifications)").fetchall()]
+        if "notification_type" not in notification_columns:
+            conn.execute("ALTER TABLE notifications ADD COLUMN notification_type TEXT DEFAULT 'info'")
+        if "reference_id" not in notification_columns:
+            conn.execute("ALTER TABLE notifications ADD COLUMN reference_id INTEGER")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS match_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lost_id INTEGER NOT NULL,
+                found_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -520,6 +564,7 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password"], password):
+            session.permanent = True
             session["username"] = user["username"]
             session["user_id"] = user["id"]
             return redirect("/")
@@ -545,10 +590,10 @@ def login():
 
             <form method="POST">
                 <label>Username</label>
-                <input type="text" name="username" placeholder="Enter your username" required>
+                <input type="text" name="username" placeholder="Enter your username" autocomplete="username" required>
 
                 <label>Password</label>
-                <input type="password" name="password" placeholder="Enter your password" required>
+                <input type="password" name="password" placeholder="Enter your password" autocomplete="current-password" required>
 
                 <button class="btn btn-primary" type="submit">🔐 Login</button>
             </form>
@@ -708,10 +753,10 @@ def register():
 
             <form method="POST">
                 <label>Username</label>
-                <input type="text" name="username" placeholder="Choose a username" required>
+                <input type="text" name="username" placeholder="Choose a username" autocomplete="username" required>
 
                 <label>Password</label>
-                <input type="password" name="password" placeholder="Create a password" required>
+                <input type="password" name="password" placeholder="Create a password" autocomplete="new-password" required>
 
                 <button class="btn btn-primary" type="submit">📝 Register</button>
             </form>
@@ -755,7 +800,7 @@ def report_lost():
             return styled_page("""
                 <div class="result-card">
                     <div class="page-title">⚠️ Missing Details</div>
-                    <div class="alert alert-info">Name, item, location, contact number and description are compulsory. Photo is optional.</div>
+                    <div class="alert alert-info">Name, item, location and contact number are compulsory.</div>
                     <a class="btn btn-primary" href="/report-lost">← Go Back</a>
                 </div>
             """, title="Missing Details")
@@ -785,66 +830,65 @@ def report_lost():
             if items_match(item, found["item"])
         ]
 
-        matched = False
-
+        pending_created = False
         for found in found_items:
             existing = db_execute(
                 conn,
                 """
-                SELECT id
-                FROM notifications
-                WHERE user_id = ?
-                AND message LIKE ?
+                SELECT id FROM match_requests
+                WHERE lost_id = ? AND found_id = ? AND status = 'pending'
                 LIMIT 1
                 """,
-                (
-                    session["user_id"],
-                    f"%Your lost item '{item}' has been found!%"
-                )
+                (lost_id, found["id"])
             ).fetchone()
 
-            if not existing:
-                message = (
-                    f"🔔 Your lost item '{item}' has been found! "
-                    f"Found at {found['location']}. "
-                    f"Found by {found['finder']}. "
-                    f"📞 Contact: {found['contact']}"
-                )
+            if existing:
+                continue
 
-                db_execute(
-                    conn,
-                    """
-                    INSERT INTO notifications
-                    (name, message, user_id)
-                    VALUES (?, ?, ?)
-                    """,
-                    (name, message, session["user_id"])
-                )
+            request_insert = db_execute(
+                conn,
+                """
+                INSERT INTO match_requests (lost_id, found_id, status)
+                VALUES (?, ?, 'pending')
+                RETURNING id
+                """,
+                (lost_id, found["id"])
+            )
+            request_row = request_insert.fetchone()
+            match_id = request_row["id"] if isinstance(request_row, dict) else request_row[0]
 
-            db_execute(conn, "UPDATE found_items SET matched = 1 WHERE id = ?", (found["id"],))
-            db_execute(conn, "UPDATE lost_items SET matched = 1 WHERE id = ?", (lost_id,))
-            matched = True
+            message = (
+                f"🔎 Possible match for '{found['item']}'. "
+                f"Lost person says: {description} "
+                f"Please check the item you found and choose Yes, I Found This or Not My Item."
+            )
+            db_execute(
+                conn,
+                """
+                INSERT INTO notifications
+                (name, message, user_id, notification_type, reference_id)
+                VALUES (?, ?, ?, 'match_request', ?)
+                """,
+                (found["finder"], message, found["user_id"], match_id)
+            )
+            pending_created = True
 
         conn.commit()
         conn.close()
 
-        if matched:
+        if pending_created:
             return styled_page("""
                 <div class="result-card">
-                    <div class="page-title">🎉 Match Found!</div>
+                    <div class="page-title">🔎 Possible Match Found</div>
                     <div class="page-subtitle">
-                        Your lost item matches an item that was already reported as found.
+                        A possible match was sent to the person who reported the found item.
                     </div>
-                    <div class="alert alert-success">
-                        🔔 A notification has been sent to <b>{{ name }}</b>.
+                    <div class="alert alert-info">
+                        They must check your identifying description and confirm the match first.
                     </div>
-                    <p class="section-copy">
-                        📱 Open Notifications to see the finder's contact number.
-                    </p>
                     <a class="btn btn-primary" href="/">🏠 Back to Home</a>
-                    <a class="btn btn-soft" href="/notifications">🔔 Open Notifications</a>
                 </div>
-            """, title="Match Found", name=name)
+            """, title="Possible Match", name=name)
 
         return styled_page("""
             <div class="result-card">
@@ -909,10 +953,8 @@ def report_found():
         item = request.form.get("item", "").strip()
         location = request.form.get("location", "").strip()
         contact = request.form.get("contact", "").strip()
-        description = request.form.get("description", "").strip()
-        photo = save_optional_photo(request.files.get("photo"))
 
-        if required_form_error(finder, item, location, contact, description):
+        if required_form_error(finder, item, location, contact):
             return styled_page("""
                 <div class="result-card">
                     <div class="page-title">⚠️ Missing Details</div>
@@ -931,7 +973,7 @@ def report_found():
             VALUES (?, ?, ?, ?, ?, ?, ?, 0)
             RETURNING id
             """,
-            (finder, item, location, contact, description, photo, session["user_id"])
+            (finder, item, location, contact, "", None, session["user_id"])
         )
         found_row = found_insert.fetchone()
         found_id = found_row["id"] if isinstance(found_row, dict) else found_row[0]
@@ -939,8 +981,7 @@ def report_found():
         all_lost_items = db_execute(
             conn,
             """
-            SELECT *
-            FROM lost_items
+            SELECT * FROM lost_items
             WHERE COALESCE(matched, 0) = 0
             """
         ).fetchall()
@@ -950,66 +991,66 @@ def report_found():
             if items_match(item, lost["item"])
         ]
 
-        matched_names = []
-
+        pending_created = False
         for lost in lost_items:
             existing = db_execute(
                 conn,
                 """
-                SELECT id
-                FROM notifications
-                WHERE user_id = ?
-                AND message LIKE ?
+                SELECT id FROM match_requests
+                WHERE lost_id = ? AND found_id = ? AND status = 'pending'
                 LIMIT 1
                 """,
-                (
-                    lost["user_id"],
-                    f"%Your lost item '{item}' has been found!%"
-                )
+                (lost["id"], found_id)
             ).fetchone()
 
-            if not existing:
-                message = (
-                    f"🔔 Your lost item '{item}' has been found! "
-                    f"Found at {location}. "
-                    f"Found by {finder}. "
-                    f"📞 Contact: {contact}"
-                )
+            if existing:
+                continue
 
-                db_execute(
-                    conn,
-                    """
-                    INSERT INTO notifications
-                    (name, message, user_id)
-                    VALUES (?, ?, ?)
-                    """,
-                    (lost["name"], message, lost["user_id"])
-                )
+            request_insert = db_execute(
+                conn,
+                """
+                INSERT INTO match_requests (lost_id, found_id, status)
+                VALUES (?, ?, 'pending')
+                RETURNING id
+                """,
+                (lost["id"], found_id)
+            )
+            request_row = request_insert.fetchone()
+            match_id = request_row["id"] if isinstance(request_row, dict) else request_row[0]
 
-            db_execute(conn, "UPDATE lost_items SET matched = 1 WHERE id = ?", (lost["id"],))
-            db_execute(conn, "UPDATE found_items SET matched = 1 WHERE id = ?", (found_id,))
-            matched_names.append(lost["name"])
+            message = (
+                f"🔎 Possible match for '{item}'. "
+                f"The lost person says: {lost['description']} "
+                f"Please check your found item and choose Yes, I Found This or Not My Item."
+            )
+            db_execute(
+                conn,
+                """
+                INSERT INTO notifications
+                (name, message, user_id, notification_type, reference_id)
+                VALUES (?, ?, ?, 'match_request', ?)
+                """,
+                (finder, message, session["user_id"], match_id)
+            )
+            pending_created = True
 
         conn.commit()
         conn.close()
 
-        if matched_names:
-            names = ", ".join(dict.fromkeys(matched_names))
+        if pending_created:
             return styled_page("""
                 <div class="result-card">
-                    <div class="page-title">🎉 Match Found!</div>
+                    <div class="page-title">🔎 Possible Match Found</div>
                     <div class="page-subtitle">
-                        The found item matches a lost-item report.
+                        A possible match was found. The lost-item owner will only be contacted after you confirm it.
                     </div>
-                    <div class="alert alert-success">
-                        🔔 Notification sent to: <b>{{ names }}</b>
+                    <div class="alert alert-info">
+                        Open Notifications and check the identifying description before accepting.
                     </div>
-                    <p class="section-copy">
-                        📱 The matched user can see your contact number in their notification.
-                    </p>
-                    <a class="btn btn-success" href="/">🏠 Back to Home</a>
+                    <a class="btn btn-primary" href="/notifications">🔔 Open Notifications</a>
+                    <a class="btn btn-soft" href="/">🏠 Back to Home</a>
                 </div>
-            """, title="Match Found", names=names)
+            """, title="Possible Match")
 
         return styled_page("""
             <div class="result-card">
@@ -1031,7 +1072,7 @@ def report_found():
                 Add the details of the item you found so the owner can be notified.
             </div>
 
-            <form method="POST" enctype="multipart/form-data">
+            <form method="POST">
                 <label>Your Name</label>
                 <input type="text" name="finder" placeholder="Your name" required>
 
@@ -1044,11 +1085,9 @@ def report_found():
                 <label>Contact Number</label>
                 <input type="tel" name="contact" placeholder="Your contact number" required>
 
-                <label>Item Description / Identifying Details</label>
-                <textarea name="description" placeholder="Describe unique details of the item" required></textarea>
-
-                <label>Item Photo (Optional)</label>
-                <input type="file" name="photo" accept="image/png,image/jpeg,image/webp">
+                <div class="alert alert-info" style="margin-top:16px;">
+                    ℹ️ For a found report, only the item name, location and contact details are required.
+                </div>
 
                 <button class="btn btn-success" type="submit">📤 Submit Found Report</button>
             </form>
@@ -1059,8 +1098,135 @@ def report_found():
 
 
 # ============================================================
+# MATCH CONFIRMATION
+# ============================================================
+
+@app.route("/confirm-match/<int:match_id>", methods=["POST"])
+def confirm_match(match_id):
+    if "user_id" not in session:
+        return redirect("/login")
+
+    conn = get_db()
+    match = db_execute(
+        conn,
+        "SELECT * FROM match_requests WHERE id = ? AND status = 'pending'",
+        (match_id,)
+    ).fetchone()
+
+    if not match:
+        conn.close()
+        return redirect("/notifications")
+
+    found = db_execute(
+        conn,
+        "SELECT * FROM found_items WHERE id = ?",
+        (match["found_id"],)
+    ).fetchone()
+    lost = db_execute(
+        conn,
+        "SELECT * FROM lost_items WHERE id = ?",
+        (match["lost_id"],)
+    ).fetchone()
+
+    if not found or not lost or found["user_id"] != session["user_id"]:
+        conn.close()
+        return redirect("/notifications")
+
+    db_execute(conn, "UPDATE match_requests SET status = 'confirmed' WHERE id = ?", (match_id,))
+    db_execute(conn, "UPDATE lost_items SET matched = 1 WHERE id = ?", (lost["id"],))
+    db_execute(conn, "UPDATE found_items SET matched = 1 WHERE id = ?", (found["id"],))
+
+    # Close every other pending request involving either item.
+    db_execute(
+        conn,
+        """
+        UPDATE match_requests
+        SET status = 'closed'
+        WHERE status = 'pending'
+          AND id <> ?
+          AND (lost_id = ? OR found_id = ?)
+        """,
+        (match_id, lost["id"], found["id"])
+    )
+
+    # Tell the lost-item owner only after the finder confirms.
+    message = (
+        f"✅ Match confirmed for '{lost['item']}'. "
+        f"Found by {found['finder']}. Found at {found['location']}. "
+        f"📞 Contact: {found['contact']}"
+    )
+    db_execute(
+        conn,
+        """
+        INSERT INTO notifications
+        (name, message, user_id, notification_type, reference_id)
+        VALUES (?, ?, ?, 'match_confirmed', ?)
+        """,
+        (lost["name"], message, lost["user_id"], None)
+    )
+
+    db_execute(
+        conn,
+        """
+        INSERT INTO notifications
+        (name, message, user_id, notification_type, reference_id)
+        VALUES (?, ?, ?, 'info', NULL)
+        """,
+        (found["finder"], f"✅ You confirmed the match for '{found['item']}'. The owner has been notified.", found["user_id"])
+    )
+
+    conn.commit()
+    conn.close()
+    return redirect("/notifications")
+
+
+@app.route("/reject-match/<int:match_id>", methods=["POST"])
+def reject_match(match_id):
+    if "user_id" not in session:
+        return redirect("/login")
+
+    conn = get_db()
+    match = db_execute(
+        conn,
+        "SELECT * FROM match_requests WHERE id = ? AND status = 'pending'",
+        (match_id,)
+    ).fetchone()
+
+    if match:
+        found = db_execute(
+            conn,
+            "SELECT * FROM found_items WHERE id = ?",
+            (match["found_id"],)
+        ).fetchone()
+        if found and found["user_id"] == session["user_id"]:
+            db_execute(conn, "UPDATE match_requests SET status = 'rejected' WHERE id = ?", (match_id,))
+            db_execute(conn, "DELETE FROM notifications WHERE user_id = ? AND notification_type = 'match_request' AND reference_id = ?", (session["user_id"], match_id))
+            conn.commit()
+
+    conn.close()
+    return redirect("/notifications")
+
+
+# ============================================================
 # NOTIFICATIONS
 # ============================================================
+
+@app.route("/delete-notification/<int:notification_id>", methods=["POST"])
+def delete_notification(notification_id):
+    if "user_id" not in session:
+        return redirect("/login")
+
+    conn = get_db()
+    db_execute(
+        conn,
+        "DELETE FROM notifications WHERE id = ? AND user_id = ?",
+        (notification_id, session["user_id"])
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/notifications")
+
 
 @app.route("/notifications")
 def show_notifications():
@@ -1068,12 +1234,11 @@ def show_notifications():
         return redirect("/login")
 
     name = session["username"]
-
     conn = get_db()
     messages = db_execute(
         conn,
         """
-        SELECT message
+        SELECT id, message, notification_type, reference_id
         FROM notifications
         WHERE user_id = ?
         ORDER BY id DESC
@@ -1086,14 +1251,35 @@ def show_notifications():
         <div class="info-card">
             <div class="page-title">Notifications 🔔</div>
             <div class="page-subtitle">
-                Updates and item matches for <b>{{ name }}</b>.
+                Updates and possible matches for <b>{{ name }}</b>.
             </div>
 
             {% if messages %}
                 {% for message in messages %}
                     <div class="item">
-                        <div class="item-title">🔔 Update</div>
+                        <div class="item-title">
+                            {% if message["notification_type"] == "match_request" %}
+                                🔎 Possible Match
+                            {% elif message["notification_type"] == "match_confirmed" %}
+                                ✅ Match Confirmed
+                            {% else %}
+                                🔔 Update
+                            {% endif %}
+                        </div>
                         <div class="meta">{{ message["message"] }}</div>
+
+                        {% if message["notification_type"] == "match_request" %}
+                            <form method="POST" action="/confirm-match/{{ message["reference_id"] }}">
+                                <button class="btn btn-success" type="submit">✅ Yes, I Found This</button>
+                            </form>
+                            <form method="POST" action="/reject-match/{{ message["reference_id"] }}">
+                                <button class="btn btn-danger" type="submit">❌ Not My Item</button>
+                            </form>
+                        {% endif %}
+
+                        <form method="POST" action="/delete-notification/{{ message["id"] }}" style="margin-top:10px;">
+                            <button class="btn btn-soft" type="submit" style="width:auto; padding:8px 14px;">🗑️ Delete</button>
+                        </form>
                     </div>
                 {% endfor %}
             {% else %}
@@ -1179,7 +1365,7 @@ def dashboard():
         <div class="info-card">
             <div class="page-title">Your Dashboard 📊</div>
             <div class="page-subtitle">
-                Track your own lost and found reports.
+                Track your own lost and found reports. You can delete your own reports anytime.
             </div>
 
             <div class="stat-grid">
@@ -1229,6 +1415,9 @@ def dashboard():
                     <div class="item lost">
                         <div class="item-title">{{ item["item"] }}</div>
                         <div class="meta">👤 {{ item["name"] }} · 📍 {{ item["location"] }}</div>
+                        <form method="POST" action="/delete-report/lost/{{ item["id"] }}" onsubmit="return confirm('Delete this lost report?');">
+                            <button class="btn btn-danger" type="submit" style="width:auto;padding:9px 14px;margin-top:10px;">🗑️ Delete Report</button>
+                        </form>
                     </div>
                 {% endfor %}
             {% else %}
@@ -1244,6 +1433,9 @@ def dashboard():
                     <div class="item found">
                         <div class="item-title">{{ item["item"] }}</div>
                         <div class="meta">👤 Found by {{ item["finder"] }} · 📍 {{ item["location"] }}</div>
+                        <form method="POST" action="/delete-report/found/{{ item["id"] }}" onsubmit="return confirm('Delete this found report?');">
+                            <button class="btn btn-danger" type="submit" style="width:auto;padding:9px 14px;margin-top:10px;">🗑️ Delete Report</button>
+                        </form>
                     </div>
                 {% endfor %}
             {% else %}
@@ -1262,6 +1454,54 @@ def dashboard():
     item_type=item_type
     )
 
+
+
+# ============================================================
+# DELETE REPORT
+# ============================================================
+
+@app.route("/delete-report/<item_type>/<int:item_id>", methods=["POST"])
+def delete_report(item_type, item_id):
+    if "user_id" not in session:
+        return redirect("/login")
+
+    if item_type not in ("lost", "found"):
+        return redirect("/dashboard")
+
+    table = "lost_items" if item_type == "lost" else "found_items"
+
+    conn = get_db()
+
+    # Only the person who created the report can delete it.
+    owner = db_execute(
+        conn,
+        f"SELECT user_id FROM {table} WHERE id = ?",
+        (item_id,)
+    ).fetchone()
+
+    if not owner or owner["user_id"] != session["user_id"]:
+        conn.close()
+        return redirect("/dashboard")
+
+    # Close pending match requests connected to this report.
+    if item_type == "lost":
+        db_execute(
+            conn,
+            "UPDATE match_requests SET status = 'closed' WHERE lost_id = ? AND status = 'pending'",
+            (item_id,)
+        )
+    else:
+        db_execute(
+            conn,
+            "UPDATE match_requests SET status = 'closed' WHERE found_id = ? AND status = 'pending'",
+            (item_id,)
+        )
+
+    db_execute(conn, f"DELETE FROM {table} WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard")
 
 # ============================================================
 # LOGOUT
