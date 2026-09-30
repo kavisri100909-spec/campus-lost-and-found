@@ -484,11 +484,23 @@ def init_db():
             )
         """)
 
+        # Create notifications before checking/altering its columns.
+        # This fixes fresh Render SQLite databases.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                message TEXT NOT NULL,
+                user_id INTEGER
+            )
+        """)
+
         notification_columns = [row["name"] for row in conn.execute("PRAGMA table_info(notifications)").fetchall()]
         if "notification_type" not in notification_columns:
             conn.execute("ALTER TABLE notifications ADD COLUMN notification_type TEXT DEFAULT 'info'")
         if "reference_id" not in notification_columns:
             conn.execute("ALTER TABLE notifications ADD COLUMN reference_id INTEGER")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS match_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -504,15 +516,6 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                message TEXT NOT NULL,
-                user_id INTEGER
             )
         """)
 
