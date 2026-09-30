@@ -1,9 +1,14 @@
 from flask import Flask, request, render_template, render_template_string, session, redirect
+from werkzeug.utils import secure_filename
 import os
 import re
 import sqlite3
-import psycopg2
-from psycopg2.extras import RealDictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -13,6 +18,9 @@ app.secret_key = os.getenv("SECRET_KEY", "campus_lost_found_secret_key")
 # Locally, SQLite is used automatically.
 DATABASE_URL = os.getenv("DATABASE_URL")
 SQLITE_DATABASE = "campus.db"
+UPLOAD_FOLDER = "static/uploads"
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
 # ============================================================
@@ -320,6 +328,22 @@ def items_match(item_a, item_b):
     return bool(a_words & b_words)
 
 
+def save_optional_photo(file):
+    if not file or not file.filename:
+        return None
+    filename = secure_filename(file.filename)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        return None
+    unique_name = f"{session.get('user_id', 'user')}_{__import__('time').time_ns()}_{filename}"
+    path = os.path.join(UPLOAD_FOLDER, unique_name)
+    file.save(path)
+    return path.replace(os.sep, "/")
+
+
+def required_form_error(*fields):
+    return any(not str(value or "").strip() for value in fields)
+
 def init_db():
     conn = get_db()
 
@@ -331,7 +355,10 @@ def init_db():
                 item TEXT NOT NULL,
                 location TEXT NOT NULL,
                 contact TEXT NOT NULL,
-                user_id INTEGER
+                description TEXT NOT NULL,
+                photo TEXT,
+                user_id INTEGER,
+                matched INTEGER DEFAULT 0
             )
         """)
 
@@ -342,7 +369,10 @@ def init_db():
                 item TEXT NOT NULL,
                 location TEXT NOT NULL,
                 contact TEXT NOT NULL,
-                user_id INTEGER
+                description TEXT NOT NULL,
+                photo TEXT,
+                user_id INTEGER,
+                matched INTEGER DEFAULT 0
             )
         """)
 
@@ -375,6 +405,26 @@ def init_db():
             ALTER TABLE notifications
             ADD COLUMN IF NOT EXISTS user_id INTEGER
         """)
+        conn.cursor().execute("""
+            ALTER TABLE lost_items
+            ADD COLUMN IF NOT EXISTS matched INTEGER DEFAULT 0
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE found_items
+            ADD COLUMN IF NOT EXISTS matched INTEGER DEFAULT 0
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE lost_items ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE lost_items ADD COLUMN IF NOT EXISTS photo TEXT
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE found_items ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''
+        """)
+        conn.cursor().execute("""
+            ALTER TABLE found_items ADD COLUMN IF NOT EXISTS photo TEXT
+        """)
 
     else:
         conn.execute("""
@@ -384,7 +434,10 @@ def init_db():
                 item TEXT NOT NULL,
                 location TEXT NOT NULL,
                 contact TEXT NOT NULL,
-                user_id INTEGER
+                description TEXT NOT NULL,
+                photo TEXT,
+                user_id INTEGER,
+                matched INTEGER DEFAULT 0
             )
         """)
 
@@ -395,7 +448,10 @@ def init_db():
                 item TEXT NOT NULL,
                 location TEXT NOT NULL,
                 contact TEXT NOT NULL,
-                user_id INTEGER
+                description TEXT NOT NULL,
+                photo TEXT,
+                user_id INTEGER,
+                matched INTEGER DEFAULT 0
             )
         """)
 
@@ -419,18 +475,27 @@ def init_db():
         tables = {
             "lost_items": "user_id",
             "found_items": "user_id",
-            "notifications": "user_id"
+            "notifications": "user_id",
+            "lost_items_matched": "matched",
+            "found_items_matched": "matched",
+            "lost_items_description": "description",
+            "lost_items_photo": "photo",
+            "found_items_description": "description",
+            "found_items_photo": "photo"
         }
 
         for table, column in tables.items():
-            columns = conn.execute(
-                f"PRAGMA table_info({table})"
-            ).fetchall()
+            actual_table = table
+            if table == "lost_items_matched": actual_table, column = "lost_items", "matched"
+            elif table == "found_items_matched": actual_table, column = "found_items", "matched"
+            elif table == "lost_items_description": actual_table, column = "lost_items", "description"
+            elif table == "lost_items_photo": actual_table, column = "lost_items", "photo"
+            elif table == "found_items_description": actual_table, column = "found_items", "description"
+            elif table == "found_items_photo": actual_table, column = "found_items", "photo"
+            columns = conn.execute(f"PRAGMA table_info({actual_table})").fetchall()
             column_names = [row["name"] for row in columns]
             if column not in column_names:
-                conn.execute(
-                    f"ALTER TABLE {table} ADD COLUMN {column} INTEGER"
-                )
+                conn.execute(f"ALTER TABLE {actual_table} ADD COLUMN {column} INTEGER DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -679,26 +744,40 @@ def report_lost():
         return redirect("/login")
 
     if request.method == "POST":
-        name = request.form["name"].strip()
-        item = request.form["item"].strip().lower()
-        location = request.form["location"].strip()
-        contact = request.form["contact"].strip()
+        name = request.form.get("name", "").strip()
+        item = request.form.get("item", "").strip().lower()
+        location = request.form.get("location", "").strip()
+        contact = request.form.get("contact", "").strip()
+        description = request.form.get("description", "").strip()
+        photo = save_optional_photo(request.files.get("photo"))
+
+        if required_form_error(name, item, location, contact, description):
+            return styled_page("""
+                <div class="result-card">
+                    <div class="page-title">⚠️ Missing Details</div>
+                    <div class="alert alert-info">Name, item, location, contact number and description are compulsory. Photo is optional.</div>
+                    <a class="btn btn-primary" href="/report-lost">← Go Back</a>
+                </div>
+            """, title="Missing Details")
 
         conn = get_db()
 
-        db_execute(
+        lost_insert = db_execute(
             conn,
             """
             INSERT INTO lost_items
-            (name, item, location, contact, user_id)
-            VALUES (?, ?, ?, ?, ?)
+            (name, item, location, contact, description, photo, user_id, matched)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            RETURNING id
             """,
-            (name, item, location, contact, session["user_id"])
+            (name, item, location, contact, description, photo, session["user_id"])
         )
+        lost_row = lost_insert.fetchone()
+        lost_id = lost_row["id"] if isinstance(lost_row, dict) else lost_row[0]
 
         all_found_items = db_execute(
             conn,
-            "SELECT * FROM found_items"
+            "SELECT * FROM found_items WHERE COALESCE(matched, 0) = 0"
         ).fetchall()
 
         found_items = [
@@ -742,6 +821,8 @@ def report_lost():
                     (name, message, session["user_id"])
                 )
 
+            db_execute(conn, "UPDATE found_items SET matched = 1 WHERE id = ?", (found["id"],))
+            db_execute(conn, "UPDATE lost_items SET matched = 1 WHERE id = ?", (lost_id,))
             matched = True
 
         conn.commit()
@@ -787,7 +868,7 @@ def report_lost():
                 Add the item details so the owner can be notified when a match is found.
             </div>
 
-            <form method="POST">
+            <form method="POST" enctype="multipart/form-data">
                 <label>Your Name</label>
                 <input type="text" name="name" placeholder="Your name" required>
 
@@ -799,6 +880,12 @@ def report_lost():
 
                 <label>Contact Number</label>
                 <input type="tel" name="contact" placeholder="Your contact number" required>
+
+                <label>Item Description / Identifying Details</label>
+                <textarea name="description" placeholder="Describe unique details of the item" required></textarea>
+
+                <label>Item Photo (Optional)</label>
+                <input type="file" name="photo" accept="image/png,image/jpeg,image/webp">
 
                 <button class="btn btn-danger" type="submit">📤 Submit Lost Report</button>
             </form>
@@ -818,28 +905,43 @@ def report_found():
         return redirect("/login")
 
     if request.method == "POST":
-        finder = request.form["finder"].strip()
-        item = request.form["item"].strip()
-        location = request.form["location"].strip()
-        contact = request.form["contact"].strip()
+        finder = request.form.get("finder", "").strip()
+        item = request.form.get("item", "").strip()
+        location = request.form.get("location", "").strip()
+        contact = request.form.get("contact", "").strip()
+        description = request.form.get("description", "").strip()
+        photo = save_optional_photo(request.files.get("photo"))
+
+        if required_form_error(finder, item, location, contact, description):
+            return styled_page("""
+                <div class="result-card">
+                    <div class="page-title">⚠️ Missing Details</div>
+                    <div class="alert alert-info">Name, item, location, contact number and description are compulsory. Photo is optional.</div>
+                    <a class="btn btn-primary" href="/report-found">← Go Back</a>
+                </div>
+            """, title="Missing Details")
 
         conn = get_db()
 
-        db_execute(
+        found_insert = db_execute(
             conn,
             """
             INSERT INTO found_items
-            (finder, item, location, contact, user_id)
-            VALUES (?, ?, ?, ?, ?)
+            (finder, item, location, contact, description, photo, user_id, matched)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            RETURNING id
             """,
-            (finder, item, location, contact, session["user_id"])
+            (finder, item, location, contact, description, photo, session["user_id"])
         )
+        found_row = found_insert.fetchone()
+        found_id = found_row["id"] if isinstance(found_row, dict) else found_row[0]
 
         all_lost_items = db_execute(
             conn,
             """
             SELECT *
             FROM lost_items
+            WHERE COALESCE(matched, 0) = 0
             """
         ).fetchall()
 
@@ -884,6 +986,8 @@ def report_found():
                     (lost["name"], message, lost["user_id"])
                 )
 
+            db_execute(conn, "UPDATE lost_items SET matched = 1 WHERE id = ?", (lost["id"],))
+            db_execute(conn, "UPDATE found_items SET matched = 1 WHERE id = ?", (found_id,))
             matched_names.append(lost["name"])
 
         conn.commit()
@@ -927,7 +1031,7 @@ def report_found():
                 Add the details of the item you found so the owner can be notified.
             </div>
 
-            <form method="POST">
+            <form method="POST" enctype="multipart/form-data">
                 <label>Your Name</label>
                 <input type="text" name="finder" placeholder="Your name" required>
 
@@ -939,6 +1043,12 @@ def report_found():
 
                 <label>Contact Number</label>
                 <input type="tel" name="contact" placeholder="Your contact number" required>
+
+                <label>Item Description / Identifying Details</label>
+                <textarea name="description" placeholder="Describe unique details of the item" required></textarea>
+
+                <label>Item Photo (Optional)</label>
+                <input type="file" name="photo" accept="image/png,image/jpeg,image/webp">
 
                 <button class="btn btn-success" type="submit">📤 Submit Found Report</button>
             </form>
@@ -1172,3 +1282,4 @@ init_db()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=True)
+    
