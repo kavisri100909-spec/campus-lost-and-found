@@ -484,17 +484,6 @@ def init_db():
             )
         """)
 
-        # Create notifications before checking/updating its columns.
-        # This is required for a fresh SQLite database on Render/local runs.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                message TEXT NOT NULL,
-                user_id INTEGER
-            )
-        """)
-
         notification_columns = [row["name"] for row in conn.execute("PRAGMA table_info(notifications)").fetchall()]
         if "notification_type" not in notification_columns:
             conn.execute("ALTER TABLE notifications ADD COLUMN notification_type TEXT DEFAULT 'info'")
@@ -1249,10 +1238,22 @@ def show_notifications():
     messages = db_execute(
         conn,
         """
-        SELECT id, message, notification_type, reference_id
-        FROM notifications
-        WHERE user_id = ?
-        ORDER BY id DESC
+        SELECT
+            n.id,
+            n.message,
+            n.notification_type,
+            n.reference_id,
+            li.photo AS lost_photo,
+            li.description AS lost_description,
+            li.item AS lost_item
+        FROM notifications n
+        LEFT JOIN match_requests mr
+            ON n.reference_id = mr.id
+            AND n.notification_type = 'match_request'
+        LEFT JOIN lost_items li
+            ON mr.lost_id = li.id
+        WHERE n.user_id = ?
+        ORDER BY n.id DESC
         """,
         (session["user_id"],)
     ).fetchall()
@@ -1280,6 +1281,24 @@ def show_notifications():
                         <div class="meta">{{ message["message"] }}</div>
 
                         {% if message["notification_type"] == "match_request" %}
+                            {% if message["lost_photo"] %}
+                                <div style="margin:12px 0;">
+                                    <div style="font-weight:700; margin-bottom:6px;">📷 Lost Item Photo</div>
+                                    <img
+                                        src="/{{ message["lost_photo"] }}"
+                                        alt="Lost item photo"
+                                        style="width:100%; max-width:320px; max-height:260px; object-fit:contain; border-radius:14px; border:1px solid #dbe4f0; background:#f8fafc;"
+                                    >
+                                </div>
+                            {% endif %}
+
+                            {% if message["lost_description"] %}
+                                <div class="alert alert-info" style="margin-top:10px;">
+                                    <b>🔎 Owner's identifying details:</b><br>
+                                    {{ message["lost_description"] }}
+                                </div>
+                            {% endif %}
+
                             <form method="POST" action="/confirm-match/{{ message["reference_id"] }}">
                                 <button class="btn btn-success" type="submit">✅ Yes, I Found This</button>
                             </form>
